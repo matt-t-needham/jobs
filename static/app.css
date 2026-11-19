@@ -136,6 +136,13 @@ h2 .count { margin-left: 0.5em; letter-spacing: 0; }
   color: var(--bix-text-faint, #6c7086);
 }
 .open-link { margin-left: 0; }
+.views { display: flex; gap: 1.1rem; margin: -0.25rem 0 0.75rem; font-size: 0.9rem; }
+.views a { color: var(--bix-text-muted, #7f849c); text-decoration: none; min-height: 44px; display: inline-flex; align-items: center; }
+.views a:hover { color: var(--bix-text, #cdd6f4); }
+.pr-link { color: var(--bix-text, #cdd6f4); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.steps .btn { margin-left: auto; flex: none; min-height: 36px; }
+.steps li { flex-wrap: wrap; }
+.steps .step-text { flex: 1 1 10rem; }
 
 /* Open view: the conversation, the approval cards and the composer. */
 .log {
