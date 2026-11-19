@@ -79,6 +79,9 @@ h2 .count { margin-left: 0.5em; letter-spacing: 0; }
   color: inherit; text-decoration: none;
 }
 .row:hover { background: var(--bix-bg-sunken, #181825); }
+/* The name is the link: underlined, so it reads as tappable with or without hover. */
+.row .name { text-decoration: underline; text-decoration-color: var(--bix-border-strong, #45475a); text-underline-offset: 3px; }
+.row:hover .name, .row:focus-visible .name { text-decoration-color: var(--bix-accent, #fab387); }
 .row[aria-current="true"] { background: var(--bix-surface, #313244); }
 .row .head { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
 .row .name {
