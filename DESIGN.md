@@ -580,6 +580,11 @@ GitHub. A repo that fails to list shows its error, not an empty list.
 The board's approve and release actions call the broker, which edits the todo file under
 the same audit as the rest.
 
+**Model.** Everything started from the workbench (the main agent, project agents and task
+sessions) runs on the most capable model the subscription can use, which is Opus 5.5: the
+Fable alias needs usage credits. The page offers no choice, and the broker ignores any model
+a request names. Revisit when credits or the subscription change.
+
 **Built first:** the todo parser and writer (`broker/todos.py`), the broker actions
 `todos`, `todo_set` and `prs`, and the board's Projects view with the todo list and PR
 links. **Not built:** the project agents, the cron tick and the main agent's routing.

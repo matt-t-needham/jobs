@@ -39,7 +39,7 @@ from broker import todos as TODOS  # noqa: E402  (the package is importable from
 log = logging.getLogger("broker")
 
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-MODELS = ("haiku", "sonnet", "opus")
+MODEL = "opus"  # every session the workbench starts: the most capable model on the subscription
 MAX_REQUEST = 64 * 1024
 TRANSCRIPT_QUIET_S = 10.0
 HISTORY_BYTES = 2 * 1024 * 1024  # the end of the transcript that history reads
@@ -367,11 +367,11 @@ class Broker:
         return s
 
     @staticmethod
-    def _model_of(req: Dict[str, Any]) -> str:
-        model = req.get("model") or "sonnet"
-        if model not in MODELS:
-            raise BrokerError("model must be one of " + ", ".join(MODELS), 400)
-        return model
+    def _model_of(_req: Dict[str, Any]) -> str:
+        """Always the top model this subscription can use. The request's model field is
+        ignored: the caller can't pick a smaller one. (Fable needs usage credits, so the
+        top available is Opus; revisit when that changes.)"""
+        return MODEL
 
     def check_cwd(self, cwd: Any) -> str:
         if not isinstance(cwd, str) or not cwd:

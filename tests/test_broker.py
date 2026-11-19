@@ -240,6 +240,14 @@ def test_history_shows_the_transcript_of_a_session_nobody_is_driving(broker):
     assert "SECRET-INPUT-999" not in json.dumps(r)
 
 
+def test_the_model_is_always_the_top_one_whatever_the_request_asks(broker):
+    r = call(broker, action="start", cwd=broker.project, text="hi", model="haiku", clientId="m1")
+    assert r["ok"]
+    assert wait_for(lambda: broker.args_log.exists() and broker.args_log.read_text().strip())
+    started = json.loads(broker.args_log.read_text().splitlines()[0])
+    assert started[started.index("--model") + 1] == "opus"
+
+
 def test_a_cursor_ahead_of_this_broker_asks_the_page_to_reload(broker):
     """After a broker restart the numbering starts again; a stale cursor must say so."""
     sid = start(broker, "one")
