@@ -215,3 +215,34 @@ def test_the_web_socket_never_takes_an_approval_request(broker):
 def test_the_approval_socket_takes_nothing_else(broker):
     r = broker.dispatch({"action": "start", "cwd": broker.project, "text": "hi", "token": TOKEN}, "approval")
     assert r["status"] == 404
+
+
+def test_history_shows_the_transcript_of_a_session_nobody_is_driving(broker):
+    """A terminal session has no live events, so the Open view must read its transcript."""
+    sid = str(uuid.uuid4())
+    tdir = broker.cfg.claude_home / "projects" / "-x"
+    tdir.mkdir(parents=True, exist_ok=True)
+    recs = [
+        {"type": "user", "message": {"content": "deploy with token=abc123def456"}, "timestamp": "2026-11-19T01:00:00.000Z"},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Running it now."},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "echo SECRET-INPUT-999"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "is_error": True, "content": "boom"}]}},
+        {"type": "user", "message": {"content": "<system-reminder>skip me</system-reminder>"}},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Failed; see above."}]}},
+    ]
+    (tdir / f"{sid}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+    r = call(broker, action="history", sessionId=sid)
+    assert r["ok"] and r["cursor"] == 0
+    kinds = [(i["kind"], i.get("text") or i.get("name") or "") for i in r["items"]]
+    assert kinds == [("user", "deploy with token=[redacted]"), ("text", "Running it now."),
+                     ("tool", "Bash"), ("tool_result", ""), ("text", "Failed; see above.")]
+    assert "SECRET-INPUT-999" not in json.dumps(r)
+
+
+def test_a_cursor_ahead_of_this_broker_asks_the_page_to_reload(broker):
+    """After a broker restart the numbering starts again; a stale cursor must say so."""
+    sid = start(broker, "one")
+    assert wait_for(lambda: turn_done(broker, sid))
+    assert call(broker, action="events", sessionId=sid, after=0)["reset"] is False
+    assert call(broker, action="events", sessionId=sid, after=10_000)["reset"] is True

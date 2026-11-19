@@ -159,7 +159,8 @@ h2 .count { margin-left: 0.5em; letter-spacing: 0; }
   background: var(--bix-bg-sunken, #181825);
   border: 1px solid var(--bix-border-strong, #45475a); border-radius: 8px;
 }
-.approval .turn-text { margin: 0.3rem 0 0.6rem; font-family: var(--bix-mono, ui-monospace, monospace); font-size: 0.85rem; }
+.approval .turn-text { margin: 0.3rem 0 0.6rem; }
+.approval .summary { font-family: var(--bix-mono, ui-monospace, monospace); font-size: 0.85rem; }
 .composer { margin-top: 0.75rem; }
 .composer textarea {
   width: 100%; min-height: 44px; resize: vertical;

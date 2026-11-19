@@ -41,6 +41,9 @@ UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 MODELS = ("haiku", "sonnet", "opus")
 MAX_REQUEST = 64 * 1024
 TRANSCRIPT_QUIET_S = 10.0
+HISTORY_BYTES = 2 * 1024 * 1024  # the end of the transcript that history reads
+HISTORY_ITEMS = 300
+HISTORY_TEXT = 4000              # per message, in the Open view
 MAX_TEXT = 20_000
 APPROVAL_TEXT = 300
 APPROVAL_TOOL = "mcp__jobs-approval__approve"
@@ -267,6 +270,36 @@ def exited(pid: int) -> bool:
     return state in ("Z", "X")
 
 
+def history_items(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """What one transcript record shows in the Open view, in order: the person's
+    messages, Claude's text, tool names, and failed tool results. Tool inputs and
+    outputs stay out, as they do for live events."""
+    if rec.get("isSidechain") is True:
+        return []
+    kind = rec.get("type")
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    at = collector.iso_ms(rec.get("timestamp"))
+    out: List[Dict[str, Any]] = []
+    if kind == "user":
+        if isinstance(content, str):
+            if content.strip() and not content.lstrip().startswith("<"):
+                out.append({"kind": "user", "text": collector.redact(content.strip())[:HISTORY_TEXT], "at": at})
+        elif isinstance(content, list):
+            for b in content:
+                if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("is_error"):
+                    out.append({"kind": "tool_result", "error": True, "at": at})
+    elif kind == "assistant" and isinstance(content, list):
+        for b in content:
+            if not isinstance(b, dict):
+                continue
+            if b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip():
+                out.append({"kind": "text", "text": collector.redact(b["text"].strip())[:HISTORY_TEXT], "at": at})
+            elif b.get("type") == "tool_use":
+                out.append({"kind": "tool", "name": str(b.get("name"))[:80], "at": at})
+    return out
+
+
 def approval_summary(tool_name: str, tool_input: Any) -> str:
     """One line for the approval card: the command, the path, or the tool name."""
     if isinstance(tool_input, dict):
@@ -367,6 +400,37 @@ class Broker:
                 return pid
         return None
 
+    def transcript_path(self, sid: str) -> Optional[Path]:
+        paths = list((self.cfg.claude_home / "projects").glob(f"*/{sid}.jsonl"))
+        return max(paths, key=lambda p: p.stat().st_mtime) if paths else None
+
+    def _history(self, _req: Dict[str, Any], sid: Optional[str]) -> Dict[str, Any]:
+        """The conversation as the transcript on disk has it, so a terminal session shows
+        its history too. `cursor` is the live event number at the moment it was read:
+        events after it are new. A reply still being written can show up in both."""
+        if sid is None:
+            raise BrokerError("sessionId is needed", 400)
+        with self.lock:
+            ring = self.rings.get(sid)
+            cursor = ring.seq if ring is not None else 0
+        path = self.transcript_path(sid)
+        if path is None:
+            raise BrokerError("no transcript for this session", 404)
+        size = path.stat().st_size
+        start = max(0, size - HISTORY_BYTES)
+        with path.open("rb") as f:
+            f.seek(start)
+            lines = f.read().split(b"\n")
+        if start > 0:
+            lines = lines[1:]  # the first line was cut at the window's start
+        items: List[Dict[str, Any]] = []
+        for line in lines:
+            rec = collector._record(line)
+            if rec is not None:
+                items.extend(history_items(rec))
+        return {"items": items[-HISTORY_ITEMS:], "cursor": cursor,
+                "truncated": start > 0 or len(items) > HISTORY_ITEMS}
+
     def _session_file(self, sid: str) -> Optional[Dict[str, Any]]:
         sessions = self.cfg.claude_home / "sessions"
         try:
@@ -446,6 +510,7 @@ class Broker:
             return {"ok": False, "status": 403, "error": "forbidden"}
         handler = {
             "start": self._start, "send": self._send, "events": self._events,
+            "history": self._history,
             "approve": self._approve, "stop": self._stop, "release": self._release,
             "take_over": self._take_over,
         }.get(action)
@@ -494,7 +559,10 @@ class Broker:
             s = self.drivers.get(sid)
             ring = self.rings.get(sid)
         events, gap = ring.since(after) if ring is not None else ([], False)
-        return {"events": events, "gap": gap, "driver": self.driver_of(sid),
+        # A cursor ahead of this broker's numbering means the broker restarted since the
+        # client read its cursor; the client must reload the transcript.
+        reset = after > (ring.seq if ring is not None else 0)
+        return {"events": events, "gap": gap, "reset": reset, "driver": self.driver_of(sid),
                 "busy": bool(s and s.busy), "approvals": s.pending() if s else []}
 
     def _approve(self, req: Dict[str, Any], sid: Optional[str]) -> Dict[str, Any]:

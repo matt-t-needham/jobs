@@ -144,7 +144,7 @@ async def event_stream(body: Callable[[], str], disconnected: Callable[[], Await
         await sleep(1)
 
 
-WORKBENCH_ACTIONS = ("start", "send", "events", "approve", "stop", "release", "take_over")
+WORKBENCH_ACTIONS = ("start", "send", "events", "history", "approve", "stop", "release", "take_over")
 WORKBENCH_FIELDS = ("sessionId", "text", "model", "after", "clientId", "approvalId", "allow")
 
 
