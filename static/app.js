@@ -516,21 +516,13 @@ function mountOpen(id) {
   text.placeholder = "Message";
   text.setAttribute("aria-label", "Message");
   const row = el("div", "composer-row");
-  const model = el("select");
-  model.id = "open-model";
-  model.setAttribute("aria-label", "Model");
-  for (const m of ["sonnet", "opus", "haiku"]) {
-    const opt = el("option", null, m);
-    opt.value = m;
-    model.append(opt);
-  }
   const send = el("button", "btn", "Send");
   send.type = "submit";
   send.id = "open-send";
   const stop = el("button", "btn quiet", "Stop");
   stop.type = "button";
   stop.id = "open-stop";
-  row.append(model, send, stop);
+  row.append(send, stop);
   form.append(text, row);
 
   form.addEventListener("submit", async (e) => {
@@ -540,7 +532,8 @@ function mountOpen(id) {
     send.disabled = true;
     try {
       const clientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
-      await api("send", { sessionId: id, text: msg, model: model.value, clientId });
+      // The broker picks the model (the top one available); the page doesn't choose.
+      await api("send", { sessionId: id, text: msg, clientId });
       text.value = "";
       o.busy = true;
       o.error = null;
@@ -596,9 +589,183 @@ function renderView() {
   view.append(back, open, viewport(t));
 }
 
+// ---------------------------------------------------------------- Projects
+// Each project's todos (its markdown file, four states: 0 unapproved, 1 approved,
+// 2 in progress, 3 done) and its pull requests, both from the broker (DESIGN.md §12).
+// The broker writes the todo files; this page only asks it to move one item at a time.
+
+const TODO_STATES = ["Unapproved", "Approved", "In progress", "Done"];
+const PROJECTS_EVERY = 20000;   // ms between refreshes while the page is open on projects
+let projectsData = null;        // { projects: [{ name, items, error }] }
+let prsData = null;             // { repos: [{ project, repo, prs, error }] }
+let projectsErr = null;
+let projectsFetchedAt = 0;
+
+function inProjects() {
+  return /^#projects$|^#project=/.test(location.hash);
+}
+
+function selectedProject() {
+  const m = /^#project=([A-Za-z0-9_.-]{1,64})$/.exec(location.hash);
+  return m ? m[1] : null;
+}
+
+async function refreshProjects() {
+  projectsFetchedAt = Date.now();
+  try {
+    projectsData = await api("todos", {});
+    prsData = await api("prs", {});
+    projectsErr = null;
+  } catch (err) {
+    projectsErr = err.message;
+  }
+  render();
+}
+
+async function todoSet(project, todoId, expected, to, confirmText) {
+  if (confirmText && !window.confirm(confirmText)) return;
+  try {
+    await api("todo_set", { project, todoId, expected, to });
+    projectsErr = null;
+  } catch (err) {
+    projectsErr = err.message;  // e.g. "that todo is approved, not unapproved; reload"
+  }
+  refreshProjects();
+}
+
+function projectCounts(p) {
+  const counts = [0, 0, 0, 0];
+  for (const it of p.items) counts[it.state] += 1;
+  return counts;
+}
+
+function renderProjectList() {
+  const root = document.getElementById("projects");
+  root.replaceChildren();
+  const projects = (projectsData && projectsData.projects) || [];
+  const h = el("h2", "bix-label", "Projects");
+  h.append(el("span", "count mono", String(projects.length)));
+  root.append(h);
+  if (projectsErr) root.append(el("p", "notice", projectsErr));
+  const ul = el("ul", "rows");
+  for (const p of projects) {
+    const c = projectCounts(p);
+    const li = el("li");
+    const a = el("a", "row");
+    a.href = "#project=" + encodeURIComponent(p.name);
+    if (selectedProject() === p.name) a.setAttribute("aria-current", "true");
+    a.append(el("span", "head"));
+    a.firstChild.append(el("span", "name", p.name));
+    a.append(joined([
+      el("span", null, c[0] + " unapproved"),
+      el("span", null, c[1] + " approved"),
+      el("span", null, c[2] + " in progress"),
+    ]));
+    li.append(a);
+    ul.append(li);
+  }
+  root.append(ul);
+  document.getElementById("empty").hidden = true;
+}
+
+function prState(pr) {
+  if (pr.state === "MERGED") return "merged";
+  if (pr.state === "CLOSED") return "closed";
+  return pr.draft ? "draft" : "open";
+}
+
+function prNodes(repo) {
+  if (!repo) return [muted("Loading…")];
+  if (repo.error) return [el("p", "notice", "Pull requests: " + repo.error)];
+  if (!repo.prs.length) return [muted("No open pull requests, and none merged in the last 14 days.")];
+  return repo.prs.map((pr) => {
+    const d = el("div", "turn");
+    const title = "#" + pr.number + " " + pr.title;
+    if (pr.url) {
+      const a = el("a", "pr-link", title);
+      a.href = pr.url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      d.append(a);
+    } else {
+      d.append(el("span", null, title));
+    }
+    d.append(joined([el("span", null, prState(pr)), el("span", "mono", pr.branch), ago(pr.updatedAt)]));
+    return d;
+  });
+}
+
+function todoRow(project, it) {
+  const li = el("li", "step " + (it.state === 3 ? "done" : "todo"));
+  li.append(el("span", "step-mark"), el("span", "step-text", it.text));
+  li.append(el("span", "step-state", TODO_STATES[it.state]));
+  if (it.state === 0) {
+    const b = el("button", "btn quiet", "Approve");
+    b.type = "button";
+    b.addEventListener("click", () => todoSet(project, it.id, 0, 1));
+    li.append(b);
+  } else if (it.state === 2) {
+    const b = el("button", "btn quiet", "Release");
+    b.type = "button";
+    b.addEventListener("click", () => todoSet(project, it.id, 2, 1,
+      "Release this todo back to approved? The agent working on it will stop being the owner."));
+    li.append(b);
+  }
+  return li;
+}
+
+function renderProjectView(name) {
+  const view = document.getElementById("view");
+  view.replaceChildren();
+  const back = el("a", "back", "All projects");
+  back.href = "#projects";
+  view.append(back);
+  const p = projectsData && projectsData.projects.find((x) => x.name === name);
+  if (!p) {
+    view.append(el("p", "v-muted", projectsData ? "No todo file for this project." : "Loading…"));
+    return;
+  }
+  const repoEntry = prsData && prsData.repos.find((r) => r.project === name);
+  const head = el("header", "v-head");
+  head.append(el("h2", "v-title", name));
+  head.append(joined([repoEntry ? el("span", "mono", repoEntry.repo) : null]));
+  view.append(head);
+
+  if (p.error) view.append(el("p", "notice", p.error));
+  for (let s = 0; s < 4; s += 1) {
+    const items = p.items.filter((it) => it.state === s);
+    const list = el("ul", "steps");
+    for (const it of items) list.append(todoRow(name, it));
+    const nodes = items.length ? [list] : [muted("None.")];
+    view.append(block(TODO_STATES[s] + " · " + items.length, nodes));
+  }
+  view.append(block("Pull requests", prNodes(repoEntry)));
+}
+
+function renderProjectsView() {
+  const view = document.getElementById("view");
+  const name = selectedProject();
+  if (openSession && openSession.timer) {
+    clearInterval(openSession.timer);
+    openSession = null;
+  }
+  document.body.dataset.view = name ? "task" : "list";
+  if (!name) {
+    view.replaceChildren(el("p", "v-muted", "Pick a project to see its todos and pull requests."));
+    return;
+  }
+  renderProjectView(name);
+}
+
 function render() {
   renderSite();
   renderNotices();
+  if (inProjects()) {
+    if (Date.now() - projectsFetchedAt > PROJECTS_EVERY) refreshProjects();
+    renderProjectList();
+    renderProjectsView();
+    return;
+  }
   renderList();
   renderView();
 }

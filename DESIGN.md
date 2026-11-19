@@ -527,3 +527,65 @@ still held). If it can't be recovered, it closes as `abandoned` with a `WARNING`
 
 The page says which signals are missing, rather than looking confident.
 
+## 12. Projects, todos and pull requests (agreed 2026-11-19; partly built)
+
+The board gains a view per project folder, alongside the global task list. Each
+project has its own agent, a coordinating main agent sits above them, and the project's
+todos live in a markdown file that everyone reads and the broker writes.
+
+```
+Matt ─▶ jobs.bix.computer (board)
+          │
+          ▼
+     MAIN AGENT      routes a request to the project it belongs to; holds no code
+          │
+    ┌─────┴──────────┬──────────────────┐
+    ▼                ▼                  ▼
+ PROJECT AGENT    PROJECT AGENT      PROJECT AGENT      one per project folder
+ (per folder)     (per folder)       (per folder)
+    │                                                  each may open PRs against
+    ▼                                                  its own repo
+ task sessions: one worktree per task, branched from origin/<default>
+```
+
+**Todos.** One file per project, the existing `bix-infra/todos/<project>.md`. Each item
+is one line `- [N] text` with an optional indented continuation (Why, Notes), where N is
+the state:
+
+| N | State | Who moves it there |
+|---|---|---|
+| 0 | unapproved | written by an agent or by you |
+| 1 | approved | you, on the board |
+| 2 | in progress | the project agent, when it starts the item |
+| 3 | done | the project agent, when the PR merges |
+
+Allowed moves: 0→1 (approve), 1→2 (start), 2→1 (release, with a reason), 2→3 (merged).
+Nothing moves to 0 except by hand in the file. The legacy checkboxes read as `[ ]` = 0 and
+`[x]` = 3, and an item is rewritten to the integer form only when its state changes.
+Every write is a compare-and-set: the caller names the state it saw, and a stale view is
+refused, so an agent and the board can't both move the same item. Item identity is the
+text, with a suffix when two items share it, so an id survives a state change.
+
+**Cron tick.** Once a day for each of three projects (not yet chosen), a user-level cron
+entry starts the project agent. It takes the oldest approved item (state 1), moves it to
+2, and works it in its own worktree. The tick does nothing when no item is approved.
+Not built: which projects, and the crontab line, are Matt's to set.
+
+**Pull requests.** Any agent may open a PR against its own project's repo, with
+`gh pr create --draft`. The broker lists each configured repo's PRs (open, and merged
+in the last 14 days) with `gh`, cached for a minute, and the board links each one to
+GitHub. A repo that fails to list shows its error, not an empty list.
+
+**Writes go through the broker.** The jobs container never writes into the apps tree.
+The board's approve and release actions call the broker, which edits the todo file under
+the same audit as the rest.
+
+**Model.** Everything started from the workbench (the main agent, project agents and task
+sessions) runs on the most capable model the subscription can use, which is Opus 5.5: the
+Fable alias needs usage credits. The page offers no choice, and the broker ignores any model
+a request names. Revisit when credits or the subscription change.
+
+**Built first:** the todo parser and writer (`broker/todos.py`), the broker actions
+`todos`, `todo_set` and `prs`, and the board's Projects view with the todo list and PR
+links. **Not built:** the project agents, the cron tick and the main agent's routing.
+
