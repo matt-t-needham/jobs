@@ -1,0 +1,42 @@
+# jobs broker: drives Claude Code sessions for the workbench (workbench plan, phase 3).
+# It runs as matt on purpose: the sessions it starts are matt's sessions, with
+# matt's files and settings. Its protection is the front door: two unix sockets,
+# no TCP listener, and an Access JWT checked on every web action. The web socket is
+# the only one a container mounts; the approval socket never leaves the host.
+# Installed by ../install-broker.sh (copied, not symlinked). Not enabled until
+# config/broker.json has an aud.
+[Unit]
+Description=jobs broker (workbench sessions)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=matt
+Group=matt
+ExecStart=/usr/bin/python3 -I /home/matt/apps/jobs/broker/broker.py --config /home/matt/apps/jobs/config/broker.json
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=jobs-broker
+
+# Not a sandbox: the sessions need the apps tree and their own state. What it
+# keeps out: writes outside those paths, privilege gain, and kernel tuning.
+ProtectSystem=strict
+ReadWritePaths=/home/matt/apps /home/matt/jobs /home/matt/.claude /home/matt/.claude.json /home/matt/.config /home/matt/.cache /home/matt/.local/state
+ReadOnlyPaths=/home/matt/.local /home/matt/apps/jobs
+PrivateTmp=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictSUIDSGID=true
+LockPersonality=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+MemoryMax=2G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

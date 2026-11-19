@@ -397,6 +397,49 @@ has the commands and gotchas.
   names. Transcript text reaches the web only through this route, behind Access
   (workbench plan decision 2). The same redaction runs on goal and now.
 
+## 9a. The workbench broker (phase 3, built 2026-11-19)
+
+Plan: `bix-ai/PLAN-workbench.md` §4. The broker is `broker/broker.py`, a host daemon
+running as matt, so the sessions it starts are matt's sessions. It is the only thing that
+starts, resumes or stops Claude Code for the web.
+
+- **Two unix sockets, nothing on TCP.** `~/jobs/broker/broker.sock` takes the web actions
+  (`start`, `send`, `events`, `approve`, `stop`, `release`, `take_over`). `approval.sock`
+  takes only `approval_request`, from `approval.py`. Each refuses the other's actions. Only
+  the web socket is ever mounted into a container. A container holding a ticket therefore
+  can't approve its own tool calls.
+- **Access checked by the broker.** Every web action carries the visitor's Access JWT
+  (`cf-access-jwt-assertion`, forwarded by the jobs route). The broker verifies signature,
+  audience, issuer and expiry itself, as `auth.py` does. Anything else is a 403. The
+  broker won't start until `aud` is set in `config/broker.json`.
+- **One driver per session.** The web driver is one `claude -p` stream-json process per
+  session, with `--resume` (or `--session-id` for a new one). A terminal holding the session
+  is refused, until `take_over`. `take_over` only sends SIGTERM when the session file says
+  `idle` and the transcript has been quiet for 10 s, since the session file can lag mid-turn.
+  The conversation stays on disk, and the next `send` resumes it (tested live, see the PR).
+- **Permissions.** Each driver gets `--permission-prompt-tool mcp__jobs-approval__approve`
+  and `--permission-prompts host`. A tool call that needs approval goes to `approval.py`,
+  which blocks on the broker until the visitor allows or denies. A timeout, an unreachable
+  broker, or an unclear reply is a deny.
+- **Event numbers outlive the process.** The broker keeps each session's recent events in a
+  ring, numbered across drivers, so a client's cursor survives a stop and a resume.
+- **Send is idempotent.** A client id seen before is accepted without being delivered twice.
+  A send while the session is answering is refused (409).
+- **Working directory from disk.** The client never names a directory. The broker takes the
+  session's cwd from its session file or from its transcript, and checks it against the
+  allowed roots.
+- **Shown to the web:** text, the names of tools and whether they failed. Tool inputs and
+  outputs stay on the host, except approval summaries (the command or path, redacted). Text
+  deltas are redacted one at a time, so a secret split across two deltas can slip through
+  until the full message arrives: a known, narrow gap.
+- **Audit.** One line per action: time, action, session, client id (truncated), outcome.
+  Never the message text.
+- **Probe.** `broker/probe.py` checks the front door of a running broker (socket modes,
+  refusals on both sockets, no TCP listener), like `agent-sandbox-check.py`.
+- **Deploy.** The workbench is part of jobs.bix.computer, so it uses the jobs Access app and
+  its audience: no new Access app or hostname. `sudo bash install-broker.sh` installs
+  `jobs-broker.service` and starts it, since `aud` is set in `config/broker.json`.
+
 ## 10. Build order
 
 1. Collector reading `sessions/` and `jobs/`, project mapper from `cwd`, snapshot, and the
