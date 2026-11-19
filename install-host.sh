@@ -6,6 +6,8 @@
 #                      `jobs` container. Outside the apps tree because it holds
 #                      task names, and ai-router mounts the apps tree.
 #   ~/jobs/spool       hook events (hook.py writes, the collector drains)
+#   ~/jobs/context     per-task turn slices for the workbench viewport (the
+#                      collector writes; the `jobs` container mounts :ro)
 #   /etc/systemd/system/jobs-collector.service
 #
 # Enables and (re)starts the collector, so a rerun picks up an edited unit.
@@ -15,7 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 U=matt
 
-install -d -o $U -g $U -m 700 /home/$U/jobs /home/$U/jobs/snapshot /home/$U/jobs/spool
+install -d -o $U -g $U -m 700 /home/$U/jobs /home/$U/jobs/snapshot /home/$U/jobs/spool /home/$U/jobs/context
 for d in sessions jobs projects; do
     [[ -d /home/$U/.claude/$d ]] || install -d -o $U -g $U -m 700 /home/$U/.claude/$d
 done

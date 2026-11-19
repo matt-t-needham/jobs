@@ -1,16 +1,27 @@
 "use strict";
-// jobs UI: follows /api/events (SSE) and draws one tile per task, grouped by
-// project. Every string from the server goes in through textContent: names,
-// details and needs are written by a model and may carry hostile text.
+// jobs UI (the workbench, DESIGN.md §8 and workbench plan §1): follows
+// /api/events (SSE) and draws every task as a row in a list grouped by project.
+// The selected task (#task=<id>) fills the viewport: goal, now, what it is
+// blocked on, and the last few turns. Every string from the server goes in
+// through textContent: names, details, needs and turns are written by a model
+// and may carry hostile text.
 
 const LABELS = {
   "needs-you": "needs you", stalled: "stalled", working: "working",
   idle: "idle", dead: "dead", done: "done",
 };
 const ORDER = Object.keys(LABELS);
+const BLOCKED = {
+  you: { label: "Blocked on you", mark: "needs-you" },
+  limit: { label: "Blocked on a usage limit", mark: "stalled" },
+  other: { label: "Blocked on something else", mark: "stalled" },
+};
 
 let state = null;
 let connected = false;
+// Context slices by task id: { key, status: "loading" | "ok" | "error", turns }.
+// The key is the task's last activity, so a slice is refetched only when it changes.
+const contexts = new Map();
 
 function el(tag, cls, text) {
   const e = document.createElement(tag);
@@ -45,24 +56,38 @@ function joined(parts) {
   return p;
 }
 
-function tile(t) {
-  const li = el("li", "tile " + t.status);
-  const head = el("div", "head");
+function selectedId() {
+  const m = /^#task=([A-Za-z0-9_-]{1,64})$/.exec(location.hash);
+  return m ? m[1] : null;
+}
+
+function metaParts(t) {
+  const where = [t.repo, t.branch].filter(Boolean).join(" · ");
+  return [
+    where ? el("span", "mono", where) : null,
+    t.kind === "bg" ? el("span", null, "background") : null,
+    ago(t.lastActivityAt),
+    typeof t.costUsd === "number" ? el("span", "mono", "$" + t.costUsd.toFixed(2)) : null,
+  ];
+}
+
+function row(t) {
+  const li = el("li");
+  const a = el("a", "row " + t.status);
+  a.href = "#task=" + encodeURIComponent(t.id);
+  if (selectedId() === t.id) a.setAttribute("aria-current", "true");
+  const head = el("span", "head");
   head.append(mark(t.status), el("span", "name", t.name || "untitled"));
-  li.append(head);
+  a.append(head);
   if (t.status === "needs-you" && t.needs) {
-    li.append(el("p", "needs", t.needs));
+    a.append(el("p", "needs", t.needs));
   } else if (t.detail) {
     const d = el("p", "detail", t.detail);
     d.title = t.detail;
-    li.append(d);
+    a.append(d);
   }
-  const where = [t.repo, t.branch].filter(Boolean).join(" · ");
-  li.append(joined([
-    where ? el("span", "mono", where) : null,
-    ago(t.lastActivityAt),
-    typeof t.costUsd === "number" ? el("span", "mono", "$" + t.costUsd.toFixed(2)) : null,
-  ]));
+  a.append(joined(metaParts(t)));
+  li.append(a);
   return li;
 }
 
@@ -96,9 +121,7 @@ function renderNotices() {
   }
 }
 
-function render() {
-  renderSite();
-  renderNotices();
+function renderList() {
   const root = document.getElementById("projects");
   root.replaceChildren();
   const tasks = (state && state.tasks) || [];
@@ -111,12 +134,114 @@ function render() {
     const sec = el("section");
     const h = el("h2", "bix-label", proj.name);
     h.append(el("span", "count mono", String(mine.length)));
-    const ul = el("ul", "tiles");
-    mine.forEach((t) => ul.append(tile(t)));
+    const ul = el("ul", "rows");
+    mine.forEach((t) => ul.append(row(t)));
     sec.append(h, ul);
     root.append(sec);
   }
   document.getElementById("empty").hidden = !state || tasks.length > 0;
+}
+
+function loadContext(t) {
+  const key = String(t.lastActivityAt);
+  const cached = contexts.get(t.id);
+  if (cached && cached.key === key) return;
+  contexts.set(t.id, { key, status: "loading", turns: [] });
+  fetch("/api/tasks/" + encodeURIComponent(t.id) + "/context", { cache: "no-store" })
+    .then((r) => {
+      if (!r.ok) throw new Error("context request failed: HTTP " + r.status);
+      return r.json();
+    })
+    .then((body) => {
+      contexts.set(t.id, { key, status: "ok", turns: Array.isArray(body.turns) ? body.turns : [] });
+    })
+    .catch((err) => {
+      console.error("jobs: context", err);
+      contexts.set(t.id, { key, status: "error", turns: [] });
+    })
+    .finally(() => {
+      if (selectedId() === t.id) renderView();
+    });
+}
+
+function block(label, nodes) {
+  const s = el("section", "v-block");
+  s.append(el("h3", "bix-label", label), ...nodes);
+  return s;
+}
+
+function muted(text) {
+  return el("p", "v-muted", text);
+}
+
+function turn(x) {
+  const d = el("div", "turn");
+  d.append(el("span", "who", x.role === "user" ? "You" : "Claude"));
+  d.append(el("p", "turn-text", x.text));
+  return d;
+}
+
+function contextNodes(t) {
+  const c = contexts.get(t.id);
+  if (!c || c.status === "loading") return [muted("Loading…")];
+  if (c.status === "error") return [muted("Context is unavailable right now.")];
+  if (!c.turns.length) return [muted("No messages in the transcript yet.")];
+  return c.turns.map(turn);
+}
+
+function viewport(t) {
+  const v = el("div", "viewport-body");
+  const head = el("header", "v-head");
+  head.append(el("h2", "v-title", t.name || "untitled"));
+  head.append(joined(metaParts(t)));
+  v.append(head);
+
+  v.append(block("Goal", [t.goal ? el("p", "v-text", t.goal) : muted("Not known yet.")]));
+
+  const now = el("p", "v-status");
+  now.append(mark(t.status), el("span", null, LABELS[t.status] || t.status));
+  const nowNodes = [now];
+  if (t.now) nowNodes.push(el("p", "v-text", t.now));
+  v.append(block("Now", nowNodes));
+
+  if (t.blocked) {
+    const b = BLOCKED[t.blocked.on] || { label: "Blocked", mark: "stalled" };
+    const line = el("p", "v-status");
+    line.append(mark(b.mark), el("span", null, b.label));
+    const nodes = [line];
+    if (t.blocked.why) nodes.push(el("p", "v-text", t.blocked.why));
+    v.append(block("Blocked", nodes));
+  }
+
+  v.append(block("Context", contextNodes(t)));
+  return v;
+}
+
+function renderView() {
+  const view = document.getElementById("view");
+  const id = selectedId();
+  document.body.dataset.view = id ? "task" : "list";
+  view.replaceChildren();
+  if (!id) {
+    view.append(el("p", "v-muted", "Pick a task to see what it is doing."));
+    return;
+  }
+  const t = state && (state.tasks || []).find((x) => x.id === id);
+  if (!t) {
+    view.append(el("p", "v-muted", state ? "That task is no longer running." : "Connecting…"));
+    return;
+  }
+  loadContext(t);
+  const back = el("a", "back", "All tasks");
+  back.href = "#";
+  view.append(back, viewport(t));
+}
+
+function render() {
+  renderSite();
+  renderNotices();
+  renderList();
+  renderView();
 }
 
 // Latte when the system asks for light; bix.css switches on [data-theme].
@@ -141,6 +266,7 @@ events.onmessage = (e) => {
   render();
 };
 events.onerror = () => { connected = false; renderNotices(); };
+window.addEventListener("hashchange", render);
 
 setInterval(render, 30000);  // keep "N min ago" current
 render();

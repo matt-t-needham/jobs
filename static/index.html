@@ -9,12 +9,15 @@
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
-<body>
+<body data-view="list">
 <main>
   <nav class="bix-site" id="site" aria-label="Site"></nav>
   <h1 class="bix-title">Jobs<i class="bix-dot">.</i></h1>
   <div id="notices" aria-live="polite"></div>
-  <div id="projects"></div>
+  <div class="wb">
+    <div id="projects" class="list"></div>
+    <section id="view" class="viewport" aria-label="Selected task"></section>
+  </div>
   <p id="empty" class="empty" hidden>Nothing running.</p>
 </main>
 </body>

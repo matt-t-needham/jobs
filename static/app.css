@@ -1,14 +1,23 @@
 /* jobs: bix design system (bix/CLAUDE.md). Tokens from bix.css, each with its
-   Mocha literal so the page renders if bix.css can't load. */
+   Mocha literal so the page renders if bix.css can't load. The page is one
+   screen: the list and the viewport scroll inside their own columns (§8). */
 *, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
 body {
   margin: 0;
+  height: 100dvh;
+  overflow: hidden;
   background: var(--bix-bg, #1e1e2e);
   color: var(--bix-text, #cdd6f4);
   font-family: var(--bix-sans, "Helvetica Neue", Helvetica, Arial, sans-serif);
 }
-main { max-width: 64rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
-h1 { font-size: 2.6rem; margin: 1.5rem 0 1.25rem; }
+main {
+  height: 100dvh;
+  max-width: 72rem; margin: 0 auto;
+  padding: 1rem 16px 0;
+  display: flex; flex-direction: column;
+}
+h1 { font-size: 2rem; margin: 0.25rem 0 0.75rem; }
 .bix-site { font-size: 0.85rem; color: var(--bix-text-faint, #6c7086); }
 .bix-site a { color: inherit; text-decoration: none; }
 .bix-site a:hover { color: var(--bix-text, #cdd6f4); }
@@ -16,9 +25,10 @@ h1 { font-size: 2.6rem; margin: 1.5rem 0 1.25rem; }
 .bix-dot { font-style: normal; color: var(--bix-accent, #fab387); }
 .bix-title { font-weight: 300; letter-spacing: -0.035em; line-height: 1.08; }
 .mono { font-family: var(--bix-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace); }
+a:focus-visible { outline: 2px solid var(--bix-accent, #fab387); outline-offset: 2px; }
 
 /* Notices: collector warnings and the connection state, under the title. */
-#notices { margin-bottom: 1rem; }
+#notices { flex: none; }
 .notice {
   display: flex; align-items: baseline; gap: 0.5rem;
   margin: 0 0 0.35rem; font-size: 0.85rem;
@@ -26,43 +36,101 @@ h1 { font-size: 2.6rem; margin: 1.5rem 0 1.25rem; }
 }
 .notice.muted { color: var(--bix-text-muted, #7f849c); }
 
+/* Two columns from 900 px; below it one column, showing either the list or
+   the selected task (body[data-view]). */
+.wb {
+  flex: 1; min-height: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr);
+}
+.list, .viewport {
+  min-height: 0; overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scrollbar-color: var(--bix-border-strong, #45475a) transparent;
+  padding-bottom: 2rem;
+}
+body[data-view="list"] .viewport { display: none; }
+body[data-view="task"] .list { display: none; }
+@media (min-width: 900px) {
+  .wb { grid-template-columns: minmax(16rem, 22rem) minmax(0, 1fr); column-gap: 0; }
+  .list { padding-right: 1.25rem; }
+  .viewport { padding-left: 1.5rem; border-left: 1px solid var(--bix-border, #313244); }
+  body[data-view] .viewport { display: block; }
+  body[data-view] .list { display: block; }
+}
+
 /* Projects */
-section + section { margin-top: 2rem; }
+.list section + section { margin-top: 1.75rem; }
 h2.bix-label {
   font-size: 0.7rem; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
   color: var(--bix-text-faint, #6c7086);
-  margin: 0 0 0.6rem; padding-bottom: 0.4rem;
+  margin: 0 0 0.25rem; padding-bottom: 0.4rem;
   border-bottom: 1px solid var(--bix-border, #313244);
 }
 h2 .count { margin-left: 0.5em; letter-spacing: 0; }
 
-.tiles {
-  list-style: none; margin: 0; padding: 0;
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.75rem;
-}
-.tile {
-  min-width: 0;
-  background: var(--bix-bg-sunken, #181825);
-  border: 1px solid var(--bix-border, #313244);
+/* Task rows: text-led, hairline-separated, a 44px tap target each. */
+.rows { list-style: none; margin: 0; padding: 0; }
+.rows li + li { border-top: 1px solid var(--bix-border, #313244); }
+.row {
+  display: block; min-height: 44px;
+  padding: 0.65rem 0.4rem;
   border-radius: 8px;
-  padding: 0.75rem 0.85rem;
+  color: inherit; text-decoration: none;
 }
-.tile .head { display: flex; align-items: center; gap: 0.55rem; }
-.tile .name {
+.row:hover { background: var(--bix-bg-sunken, #181825); }
+.row[aria-current="true"] { background: var(--bix-surface, #313244); }
+.row .head { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+.row .name {
   font-size: 0.95rem; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tile p { margin: 0.35rem 0 0; font-size: 0.85rem; overflow-wrap: anywhere; }
-.tile .needs { color: var(--bix-text, #cdd6f4); }
-.tile .detail {
+.row p { margin: 0.3rem 0 0 1.55rem; font-size: 0.85rem; overflow-wrap: anywhere; }
+.row .needs { color: var(--bix-text, #cdd6f4); }
+.row .detail {
   color: var(--bix-text-muted, #7f849c);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.tile .meta { color: var(--bix-text-muted, #7f849c); font-size: 0.8rem; }
-.tile .meta .sep { margin: 0 0.4em; color: var(--bix-border-strong, #45475a); }
-.tile.done .name, .tile.done p { color: var(--bix-text-faint, #6c7086); }
+.row .meta { margin: 0.3rem 0 0 1.55rem; color: var(--bix-text-muted, #7f849c); font-size: 0.8rem; }
+.meta .sep { margin: 0 0.4em; color: var(--bix-border-strong, #45475a); }
+.row.done .name, .row.done p { color: var(--bix-text-faint, #6c7086); }
 
-.empty { color: var(--bix-text-muted, #7f849c); }
+.empty { flex: none; color: var(--bix-text-muted, #7f849c); }
+
+/* Viewport: goal, now, blocked, context. Hairlines between blocks. */
+.back {
+  display: inline-flex; align-items: center; min-height: 44px;
+  color: var(--bix-text-muted, #7f849c); text-decoration: none; font-size: 0.9rem;
+}
+.back:hover { color: var(--bix-text, #cdd6f4); }
+.v-head { padding: 0.25rem 0 0.8rem; border-bottom: 1px solid var(--bix-border, #313244); }
+.v-title {
+  font-size: 1.4rem; font-weight: 300; letter-spacing: -0.02em;
+  margin: 0 0 0.35rem; overflow-wrap: anywhere;
+}
+.v-head .meta { margin: 0; font-size: 0.85rem; color: var(--bix-text-muted, #7f849c); }
+.v-block { padding: 0.9rem 0; border-bottom: 1px solid var(--bix-border, #313244); }
+.v-block > .bix-label {
+  display: block; margin: 0 0 0.4rem;
+  font-size: 0.7rem; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--bix-text-faint, #6c7086);
+}
+.v-text { margin: 0.25rem 0 0; font-size: 0.95rem; line-height: 1.45; overflow-wrap: anywhere; }
+.v-status {
+  display: flex; align-items: center; gap: 0.55rem;
+  margin: 0; font-size: 0.95rem;
+}
+.v-muted { margin: 0.25rem 0 0; font-size: 0.9rem; color: var(--bix-text-muted, #7f849c); }
+.turn { padding: 0.5rem 0; }
+.turn + .turn { border-top: 1px solid var(--bix-border, #313244); }
+.turn .who {
+  font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--bix-text-faint, #6c7086);
+}
+.turn-text {
+  margin: 0.2rem 0 0; font-size: 0.9rem; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
 
 /* Status marks: a distinct shape per status, so colour is never the only
    signal (DESIGN.md §8). 12px box, centred on the first line. */

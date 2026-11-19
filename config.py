@@ -7,6 +7,11 @@ SNAPSHOT = os.environ.get("JOBS_SNAPSHOT", "")
 # Single-process shape (a laptop): the server runs the collector itself.
 COLLECTOR_CONFIG = os.environ.get("JOBS_CONFIG", "")
 
+# Per-task turn slices the collector writes (the viewport's Context). Unset: no
+# slices, and the Context panel is empty.
+CONTEXT_DIR = os.environ.get("JOBS_CONTEXT", "")
+CONTEXT_DIR = Path(CONTEXT_DIR) if CONTEXT_DIR else None
+
 # Unset: log to stdout only.
 LOG_DIR = os.environ.get("LOG_DIR", "")
 LOG_DIR = Path(LOG_DIR) if LOG_DIR else None

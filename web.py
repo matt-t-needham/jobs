@@ -7,13 +7,14 @@ a thread. See DESIGN.md §3–4.
 import asyncio
 import json
 import logging
+import re
 import threading
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -185,6 +186,36 @@ def create_app(store: Store) -> FastAPI:
     @app.get("/api/state", dependencies=gated)
     def state():
         return JSONResponse(current(), headers={"Cache-Control": "no-store"})
+
+    @app.get("/api/tasks/{task_id}/context", dependencies=gated)
+    def task_context(task_id: str):
+        # Only tasks in the current snapshot, and only ids that are file names
+        # (the collector writes one slice per task, so nothing else can be read).
+        snap = store.get()
+        listed = {t.get("id") for t in (snap or {}).get("tasks", []) if isinstance(t, dict)}
+        if task_id not in listed or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", task_id):
+            raise HTTPException(status_code=404, detail="no such task")
+        headers = {"Cache-Control": "no-store"}
+        empty = {"sessionId": task_id, "updatedAt": None, "turns": []}
+        if config.CONTEXT_DIR is None:
+            return JSONResponse(empty, headers=headers)
+        try:
+            raw = json.loads((config.CONTEXT_DIR / f"{task_id}.json").read_bytes())
+        except FileNotFoundError:
+            return JSONResponse(empty, headers=headers)
+        except (OSError, ValueError) as e:
+            log.error("context slice FAILED for a task: %s", e)
+            return JSONResponse({"ok": False, "reason": "context slice unreadable"}, status_code=503, headers=headers)
+        turns = raw.get("turns") if isinstance(raw, dict) else None
+        if not isinstance(turns, list):
+            log.error("context slice FAILED for a task: not a list of turns")
+            return JSONResponse({"ok": False, "reason": "context slice unreadable"}, status_code=503, headers=headers)
+        # Copy the known fields only, as the snapshot does.
+        kept = [{"role": t.get("role"), "at": t.get("at"), "text": t.get("text")}
+                for t in turns if isinstance(t, dict) and t.get("role") in ("user", "assistant")
+                and isinstance(t.get("text"), str)]
+        return JSONResponse({"sessionId": task_id, "updatedAt": raw.get("updatedAt"), "turns": kept},
+                            headers=headers)
 
     @app.get("/api/events", dependencies=gated)
     async def events(request: Request):

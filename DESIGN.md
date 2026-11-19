@@ -234,7 +234,8 @@ particular, a work instance never pushes to jobs.bix.computer.
   changed" warning instead of wrong tiles. Hooks are the fallback.
 - **Exposure.** The API carries task names and `needs` lines. Single-process instances
   bind to `127.0.0.1` only. A tunnelled instance sits behind an identity check
-  (Cloudflare Access on bix). No transcript bodies over the API, ever.
+  (Cloudflare Access on bix). Transcript text reaches the API only as the redacted context
+  slices of §9, and only for listed tasks; nothing else from a transcript leaves the host.
 - **Hostile text.** `name`, `detail` and `needs` are written by a model, which may have
   read untrusted input. The UI inserts them as text, never as HTML, and the server sends a
   strict CSP (no inline script, `default-src 'self'` plus the shared stylesheet origin).
@@ -283,10 +284,20 @@ project follows (from `bix/CLAUDE.md`), plus what they mean for this page.
 
 ### This page
 
-- **Layout.** Breadcrumb, then the title, then one section per project: a `.bix-label`
-  heading (`BIX`, `WORK-A`, `WORK-B`) with a count in monospace, then its tiles. Within a
-  project, tiles sort by status (`needs-you` first, then `stalled`, `working`, `idle`,
-  `dead`, `done`) and then by last activity. Empty projects are hidden.
+- **Layout (workbench, phase 1, built 2026-11-18).** Breadcrumb, then the title, then two
+  columns from 900 px: the list on the left, the selected task's viewport on the right. Below
+  900 px it's one column that shows either the list or the viewport (`All tasks` goes back).
+  The page is one screen: both columns scroll inside themselves (`100dvh`).
+  - The list is one section per project: a `.bix-label` heading (`BIX`, `WORK-A`, `WORK-B`)
+    with a count in monospace, then its rows. Within a project, rows sort by status
+    (`needs-you` first, then `stalled`, `working`, `idle`, `dead`, `done`) and then by last
+    activity. Empty projects are hidden. A row is a link to `#task=<id>`, so a selection is
+    shareable and survives a reload.
+  - The viewport shows the task's **Goal** (job name, else the session's ai-title, else its
+    first prompt), **Now** (the job's detail, else the latest assistant text), **Blocked** when
+    it applies (`on you`, `on a usage limit`, or `on something else`, each with its mark and
+    text label, then the reason), and **Context** (the last turns, read-only). Progress and
+    Changes wait for status cards and captures (workbench plan, phases 2 and 3).
 - **Tiles** are text-led, not icon cards: a `--bix-bg-sunken` panel with a hairline
   `--bix-border` and 8px radius. First line: the status mark, then the task name. Second line, muted: repo
   and branch (monospace), "N min ago" and cost. A `needs-you` tile adds the `needs` line in
@@ -363,6 +374,17 @@ has the commands and gotchas.
   regen, metrics `gen` entry, port row).
 - **Nothing new to install.** The collector uses the host's `/usr/bin/python3` (3.12), as
   `health-relay` does; the server's dependencies live only in its image.
+
+- **Context slices (workbench viewport, built 2026-11-18).** The collector writes
+  `~/jobs/context/<sessionId>.json` (`contextDir` in the config) whenever a transcript
+  changes: the last six user and assistant turns that carry text. Tool calls and tool results
+  never enter a slice. Each turn is cut to 600 characters and passed through best-effort
+  secret redaction first (key=value secrets, `sk-`/`gh*_`/`AKIA`/`xox*` tokens, and long
+  mixed letter-and-digit runs). Slices of tasks no longer shown are deleted on the next
+  snapshot. The directory is mounted read-only into `jobs` (`JOBS_CONTEXT`), and
+  `/api/tasks/<id>/context` answers only for ids in the current snapshot whose ids are file
+  names. Transcript text reaches the web only through this route, behind Access
+  (workbench plan decision 2). The same redaction runs on goal and now.
 
 ## 10. Build order
 

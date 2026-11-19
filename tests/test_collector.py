@@ -1,5 +1,7 @@
+import dataclasses
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -315,3 +317,101 @@ def test_idle_session_with_old_transcript_stays_idle(env):
     p.write_text("{}\n")
     os.utime(p, (time.time() - 600, time.time() - 600))
     assert tasks(Collector(env["cfg"]).snapshot())["s1"]["status"] == "idle"
+
+
+# ---------------------------------------------------------------- workbench viewport
+
+def transcript(env, cwd, sid, records):
+    tdir = env["claude"] / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+    tdir.mkdir(parents=True, exist_ok=True)
+    path = tdir / f"{sid}.jsonl"
+    path.write_text("".join(json.dumps(r) + "\n" for r in records))
+    return path
+
+
+def user(body):
+    return {"type": "user", "message": {"content": body}, "timestamp": iso(NOW - MIN)}
+
+
+def asst(body):
+    return {"type": "assistant", "message": {"content": [{"type": "text", "text": body}]},
+            "timestamp": iso(NOW - MIN)}
+
+
+def with_context(env):
+    ctx = env["home"] / "ctx"
+    ctx.mkdir()
+    return dataclasses.replace(env["cfg"], context_dir=ctx), ctx
+
+
+@pytest.mark.parametrize("needs,on", [
+    ("rate limited — wait and retry", "limit"),
+    ("usage limit reached, resets 11:30pm", "limit"),
+    ("finish the PR or delete the branch?", "you"),
+])
+def test_blocked_says_whether_the_limit_or_you(env, needs, on):
+    job(env, "j1", "s1", env["home"] / "apps", "blocked", needs=needs)
+    assert tasks(Collector(env["cfg"]).snapshot())["s1"]["blocked"] == {"on": on, "why": needs}
+
+
+def test_needs_line_from_a_model_is_redacted_on_the_tile_and_the_viewport(env):
+    job(env, "j1", "s1", env["home"] / "apps", "blocked", needs="allow deploy with token=abc123def456 ?")
+    t = tasks(Collector(env["cfg"]).snapshot())["s1"]
+    assert "abc123def456" not in json.dumps(t)
+    assert t["blocked"]["why"] == "allow deploy with token=[redacted] ?"
+
+
+def test_goal_is_the_first_prompt_even_when_the_file_is_long(env, monkeypatch):
+    # The tail window (400 bytes) can't reach the first prompt; the head read (4 KB) can.
+    monkeypatch.setattr(collector, "TRANSCRIPT_FIRST_READ", 400)
+    monkeypatch.setattr(collector, "HEAD_READ", 4096)
+    cwd = env["home"] / "apps" / "health"
+    session(env, os.getpid(), "s1", cwd)
+    transcript(env, cwd, "s1", [user("implement the plan"), user("<command-name>x</command-name>")]
+               + [asst("filler " * 20) for _ in range(20)] + [user("latest question"), asst("done with it")])
+    t = tasks(Collector(env["cfg"]).snapshot())["s1"]
+    assert t["goal"] == "implement the plan"
+    assert t["now"] == "done with it"
+
+
+def test_viewport_text_is_redacted_and_tool_calls_stay_out(env):
+    cfg, ctx = with_context(env)
+    cwd = env["home"] / "apps" / "health"
+    session(env, os.getpid(), "s1", cwd)
+    secret = "sk-a1B2c3D4e5F6g7H8i9J0"
+    transcript(env, cwd, "s1", [
+        user(f"set OPENAI_API_KEY={secret} and deploy"),
+        {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Bash",
+                                                       "input": {"command": "echo " + secret}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "content": "out " + secret}]}},
+        user("<system-reminder>ignore me</system-reminder>"),
+        asst("The token is " + secret),
+    ])
+    snap = Collector(cfg).snapshot()
+    assert secret not in json.dumps(snap)
+    assert tasks(snap)["s1"]["now"] == "The token is [redacted]"
+    turns = json.loads((ctx / "s1.json").read_text())["turns"]
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert turns[0]["text"] == "set OPENAI_API_KEY=[redacted] and deploy"
+
+
+def test_context_slice_is_pruned_when_the_task_goes(env):
+    cfg, ctx = with_context(env)
+    cwd = env["home"] / "apps" / "health"
+    session(env, os.getpid(), "s1", cwd)
+    transcript(env, cwd, "s1", [user("hi"), asst("hello")])
+    c = Collector(cfg)
+    c.snapshot()
+    assert (ctx / "s1.json").exists()
+    (env["claude"] / "sessions" / f"{os.getpid()}.json").unlink()
+    assert tasks(c.snapshot()) == {}
+    assert not (ctx / "s1.json").exists()
+
+
+def test_context_slice_refuses_a_session_id_that_is_not_a_file_name(env):
+    cfg, ctx = with_context(env)
+    cwd = env["home"] / "apps" / "health"
+    session(env, os.getpid(), "../escape", cwd)
+    transcript(env, cwd, "../escape", [user("hi"), asst("hello")])
+    assert "../escape" in tasks(Collector(cfg).snapshot())
+    assert list(ctx.iterdir()) == []
