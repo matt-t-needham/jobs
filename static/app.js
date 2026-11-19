@@ -726,6 +726,8 @@ function renderProjectView(name) {
     return;
   }
   const repoEntry = prsData && prsData.repos.find((r) => r.project === name);
+  // A project with no GitHub repo in the broker's config has no PRs to list.
+  const noRepo = !!prsData && !repoEntry;
   const head = el("header", "v-head");
   head.append(el("h2", "v-title", name));
   head.append(joined([repoEntry ? el("span", "mono", repoEntry.repo) : null]));
@@ -739,7 +741,9 @@ function renderProjectView(name) {
     const nodes = items.length ? [list] : [muted("None.")];
     view.append(block(TODO_STATES[s] + " · " + items.length, nodes));
   }
-  view.append(block("Pull requests", prNodes(repoEntry)));
+  view.append(block("Pull requests", noRepo
+    ? [muted("No GitHub repo is configured for this project.")]
+    : prNodes(repoEntry)));
 }
 
 function renderProjectsView() {
