@@ -587,5 +587,15 @@ a request names. Revisit when credits or the subscription change.
 
 **Built first:** the todo parser and writer (`broker/todos.py`), the broker actions
 `todos`, `todo_set` and `prs`, and the board's Projects view with the todo list and PR
-links. **Not built:** the project agents, the cron tick and the main agent's routing.
+links.
+
+**Built: the daily tick** (`broker/tick.py`, cron as matt, once a day). It closes any
+in-progress todo whose `todo-<id>` PR has merged (2→3), then starts at most three agents,
+one per project with no item in progress, each on that project's oldest approved todo
+(1→2). At most `MAX_RUNNING` (3) agents run at once; a tick at the cap starts nothing. An
+agent is `claude -p` (Opus) in its own worktree on `todo-<id>`. It may read and edit, run git,
+`gh pr create`, the tests and `docker build`; anything else is refused without a person
+watching. It opens a draft PR and stops. Every state change is committed to the todos
+checkout and pushed (CLAUDE.md commit policy). **Not built:** the main agent's routing of
+requests.
 

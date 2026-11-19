@@ -7,6 +7,19 @@
   "claudeBin": "~/.local/bin/claude",
   "claudeDir": "~/.claude",
   "todosDir": "~/apps/bix-infra/todos",
+  "todosRepo": "~/apps/bix-infra",
+  "projectDirs": {
+    "bix-ai": "~/apps/bix-ai",
+    "bix-finances": "~/apps/bix-finances",
+    "demucs": "~/apps/bix-demucs",
+    "health": "~/apps/health",
+    "infra": "~/apps/bix-infra",
+    "inkplate_dash": "~/apps/inkplate_dash",
+    "jobs": "~/apps/jobs",
+    "tour_tracker": "~/apps/tour_tracker",
+    "watch": "~/apps/materialious",
+    "av_control": "~/apps/av_control"
+  },
   "repos": {
     "bix-ai": "matt-t-needham/bix-ai",
     "bix-finances": "matt-t-needham/bix-finances",

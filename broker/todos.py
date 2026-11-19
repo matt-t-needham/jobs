@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -100,3 +101,25 @@ def write_atomic(path: Path, text: str) -> None:
 
 def project_files(todos_dir: Path) -> List[Path]:
     return sorted(p for p in todos_dir.glob("*.md") if p.name not in SKIP_FILES)
+
+
+class CommitError(RuntimeError):
+    """A todo change was written but not committed or pushed. The caller reports it."""
+
+
+def commit_file(repo: Path, path: Path, message: str) -> None:
+    """Commit one todo file on the repo's current branch and push it (CLAUDE.md commit
+    policy: short messages, no author mention). Only that file is staged, so other local
+    changes in the checkout stay where they are."""
+    rel = str(path.relative_to(repo))
+    steps = [["git", "add", "--", rel],
+             ["git", "commit", "-q", "-m", message, "--", rel],
+             ["git", "push", "-q"]]
+    for cmd in steps:
+        try:
+            out = subprocess.run(cmd, cwd=repo, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            raise CommitError(f"{cmd[1]} could not run: {e.__class__.__name__}")
+        if out.returncode != 0:
+            first = (out.stderr.strip().splitlines() or [f"{cmd[1]} failed"])[0]
+            raise CommitError(f"{cmd[1]} failed: {first[:200]}")

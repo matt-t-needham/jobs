@@ -78,6 +78,8 @@ class Settings:
     release_wait: float = 30.0
     todos_dir: Optional[Path] = None   # bix-infra/todos: one <project>.md per project
     repos: Dict[str, str] = field(default_factory=dict)  # project name -> GitHub owner/repo
+    todos_repo: Optional[Path] = None  # the checkout that holds todosDir; changes are committed here
+    project_dirs: Dict[str, str] = field(default_factory=dict)  # project name -> local folder
 
 
 @dataclass
@@ -669,6 +671,12 @@ class Broker:
             except TODOS.TodoError as e:
                 raise BrokerError(str(e), 409)
             TODOS.write_atomic(path, updated)
+            if self.cfg.todos_repo is not None:
+                try:
+                    TODOS.commit_file(self.cfg.todos_repo, path, f"todos: {project} -> {TODOS.STATES[to]}")
+                except TODOS.CommitError as e:
+                    # The file is changed on disk; say so, so nobody assumes it was committed.
+                    raise BrokerError(f"saved, but not committed: {e}", 500)
         return {"project": project, "todoId": item_id, "state": to}
 
     def _prs(self, _req: Dict[str, Any], _sid: Optional[str]) -> Dict[str, Any]:
@@ -806,6 +814,8 @@ def load_settings(raw: Dict[str, Any]) -> Settings:
         roots=roots, aud=raw["aud"], team=raw["team"],
         todos_dir=Path(os.path.expanduser(todos_dir)) if todos_dir else None,
         repos=repos,
+        todos_repo=Path(os.path.expanduser(raw["todosRepo"])) if raw.get("todosRepo") else None,
+        project_dirs=raw.get("projectDirs", {}),
     )
 
 
