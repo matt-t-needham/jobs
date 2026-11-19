@@ -33,7 +33,7 @@ SNAPSHOT_VERSION = 1
 TASK_KEYS = (
     "id", "machineId", "projectId", "name", "kind", "status", "detail", "needs",
     "repo", "branch", "startedAt", "lastActivityAt", "costUsd", "tokens", "pid", "alive",
-    "goal", "now", "blocked",
+    "goal", "now", "blocked", "progress",
 )
 STATUSES = ("needs-you", "stalled", "working", "idle", "dead", "done")
 KINDS = ("interactive", "bg")
@@ -71,7 +71,12 @@ HEAD_READ = 64 * 1024                   # bytes read from the start, once, for t
 
 # Transcript written this long after the session's last status change: it's working.
 TRANSCRIPT_LEAD_MS = 10_000
-TEXT_LIMITS = {"name": 120, "detail": 200, "needs": 300, "goal": 200, "now": 200, "turn": 600}
+TEXT_LIMITS = {"name": 120, "detail": 200, "needs": 300, "goal": 200, "now": 200, "turn": 600, "step": 200}
+# A status card older than this is a guess again (the session may have moved on
+# without reporting). Cards are written by status_mcp.py.
+CARD_MAX_AGE_MS = 2 * 3_600_000
+CARD_STEPS_MAX = 20
+BLOCKED_ON = ("you", "limit", "ci", "deploy", "task", "other")
 TRANSCRIPT_FIRST_READ = 256 * 1024     # bytes read from the end on first sight
 TRANSCRIPT_MAX_READ = 4 * 1024 * 1024  # more new bytes than this: skip to the end
 
@@ -105,6 +110,7 @@ class Config:
     poll_seconds: float = 2
     heartbeat_seconds: float = 30
     context_dir: Optional[Path] = None  # per-session turn slices for the workbench viewport
+    cards_dir: Optional[Path] = None    # status cards written by status_mcp.py
 
 
 def _expand(p: str) -> str:
@@ -163,6 +169,7 @@ def load_config(path: Path) -> Config:
         poll_seconds=_num(raw, "pollSeconds", 2),
         heartbeat_seconds=_num(raw, "heartbeatSeconds", 30),
         context_dir=Path(_expand(raw["contextDir"])) if raw.get("contextDir") else None,
+        cards_dir=Path(_expand(raw["cardsDir"])) if raw.get("cardsDir") else None,
     )
 
 
@@ -330,6 +337,13 @@ def blocked_view(status: str, needs: Optional[str]) -> Optional[Dict[str, Option
     if status == "stalled":
         return {"on": "other", "why": "stalled, unknown"}
     return None
+
+
+def progress_view(steps: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """Steps from a status card: how many are done, and the list. None when there's no plan."""
+    if not steps:
+        return None
+    return {"done": sum(1 for s in steps if s["done"]), "total": len(steps), "steps": steps}
 
 
 def turn_text(s: str) -> str:
@@ -681,6 +695,38 @@ class Collector:
                 status = "stalled"
         return status, needs
 
+    def _card(self, sid: str, now: int, warnings: List[str]) -> Optional[Dict[str, Any]]:
+        """The session's status card, cleaned, or None when there's no fresh one.
+        status_mcp.py writes cards, but a card is still checked field by field: a
+        malformed field is dropped, and an unknown blocked.on is reported."""
+        if self.cfg.cards_dir is None or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid):
+            return None
+        d, err = self.files.read(self.cfg.cards_dir / f"{sid}.json")
+        if err:
+            warnings.append(f"status card {err}")
+        if not isinstance(d, dict):
+            return None
+        updated = int_ms(d.get("updatedAt"))
+        if updated is None or now - updated > CARD_MAX_AGE_MS:
+            return None
+        blocked = d.get("blocked")
+        if blocked is not None:
+            if isinstance(blocked, dict) and blocked.get("on") in BLOCKED_ON:
+                blocked = {"on": blocked["on"], "why": text(blocked.get("why"), "needs")}
+            else:
+                warnings.append("a status card names an unknown blocked.on; it's ignored")
+                blocked = None
+        steps = None
+        if isinstance(d.get("steps"), list):
+            steps = []
+            for s in d["steps"][:CARD_STEPS_MAX]:
+                if isinstance(s, dict) and isinstance(s.get("done"), bool):
+                    line = text(s.get("text"), "step")
+                    if line:
+                        steps.append({"text": line, "done": s["done"]})
+        return {"goal": text(d.get("goal"), "goal"), "now": text(d.get("now"), "now"),
+                "blocked": blocked, "steps": steps}
+
     def _context_stale(self, sid: str, mtime_ms: Optional[int]) -> bool:
         # Session ids become file names: refuse anything that could be a path.
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid):
@@ -722,6 +768,9 @@ class Collector:
             prev_at = t.job_updated_at or 0
             if t.job is None or (job["updatedAt"] or 0) >= prev_at:
                 t.job, t.job_updated_at = job, job["updatedAt"]
+        if self.cfg.cards_dir is not None:
+            # Keep the cached card of every live session (cards are read after this).
+            seen.update(str(self.cfg.cards_dir / f"{t.id}.json") for t in drafts.values())
         self.files.forget_missing(seen)
 
         tasks = []
@@ -742,6 +791,11 @@ class Collector:
                 [v for v in (tail.mtime_ms, t.session_status_at, t.job_updated_at,
                              hook.at if hook else None) if v is not None] or [0]) or None
             status, needs = self._status(t, hook, last_activity, now, tail.mtime_ms)
+            card = self._card(t.id, now, warnings)
+            # The session said it's waiting for the person: that beats our guess.
+            if card and card["blocked"] and card["blocked"]["on"] == "you" \
+                    and status in ("working", "idle", "stalled"):
+                status, needs = "needs-you", card["blocked"]["why"]
             age = now - (last_activity or t.session_updated_at or now)
             if status == "done" and age > self.cfg.done_hide_minutes * 60_000:
                 continue
@@ -772,9 +826,12 @@ class Collector:
                 "tokens": job.get("tokens"),
                 "pid": t.pid,
                 "alive": t.alive,
-                "goal": text(job.get("name"), "goal") or text(tail.title, "goal") or text(tail.goal, "goal"),
-                "now": text(job.get("detail"), "now") or text(tail.now, "now"),
-                "blocked": blocked_view(status, needs),
+                # Cards win over guesses: the session's own words first, then the job, then the transcript.
+                "goal": (card and card["goal"]) or text(job.get("name"), "goal")
+                        or text(tail.title, "goal") or text(tail.goal, "goal"),
+                "now": (card and card["now"]) or text(job.get("detail"), "now") or text(tail.now, "now"),
+                "blocked": (card and card["blocked"]) or blocked_view(status, needs),
+                "progress": progress_view(card["steps"]) if card else None,
             })
         alive_ids = {t.id for t in drafts.values() if t.alive}
         if self.cfg.context_dir is not None:

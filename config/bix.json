@@ -4,6 +4,7 @@
   "claudeDir": "~/.claude",
   "spoolDir": "~/jobs/spool",
   "contextDir": "~/jobs/context",
+  "cardsDir": "~/jobs/cards",
   "projects": [
     { "match": "~/apps", "id": "bix", "name": "bix", "repo": "first-dir" }
   ]
