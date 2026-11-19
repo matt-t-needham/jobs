@@ -1,6 +1,6 @@
 {
-  "_comment": "Workbench broker (broker/broker.py). aud stays empty until the workbench's Access app exists: the broker refuses to start without it, and every request is refused without a valid Access token for that audience.",
-  "aud": "",
+  "_comment": "Workbench broker (broker/broker.py). The workbench is part of jobs.bix.computer, so aud is the jobs Access app's audience (the same ACCESS_AUD as the jobs container; an audience id, not a secret). The broker refuses to start while aud is empty.",
+  "aud": "2dd71ec6247eb9a9dd2cba2000a3c3e919a89cbf1e819ab650cf3ce872353696",
   "team": "bixcomputer.cloudflareaccess.com",
   "roots": ["~/apps"],
   "stateDir": "~/jobs/broker",

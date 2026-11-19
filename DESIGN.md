@@ -436,8 +436,9 @@ starts, resumes or stops Claude Code for the web.
   Never the message text.
 - **Probe.** `broker/probe.py` checks the front door of a running broker (socket modes,
   refusals on both sockets, no TCP listener), like `agent-sandbox-check.py`.
-- **Deploy.** `sudo bash install-broker.sh` installs `jobs-broker.service` and starts it
-  once `aud` is set. The Access app for the workbench origin is created in the dashboard.
+- **Deploy.** The workbench is part of jobs.bix.computer, so it uses the jobs Access app and
+  its audience: no new Access app or hostname. `sudo bash install-broker.sh` installs
+  `jobs-broker.service` and starts it, since `aud` is set in `config/broker.json`.
 
 ## 10. Build order
 

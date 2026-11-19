@@ -6,9 +6,8 @@
 #                        MCP configs (which hold approval tickets). Owner-only.
 #   /etc/systemd/system/jobs-broker.service
 #
-# The unit is enabled and started only when config/broker.json has an `aud`: the
-# Access app for the workbench must exist first, and without it the broker would
-# refuse every request anyway.
+# The unit is enabled and started only when config/broker.json has an `aud`. The
+# workbench is part of jobs.bix.computer, so that aud is the jobs Access app's.
 set -euo pipefail
 
 [[ $EUID -eq 0 ]] || { echo "run with sudo" >&2; exit 1; }
@@ -28,5 +27,5 @@ if python3 -c "import json,sys; sys.exit(0 if json.load(open('$HERE/config/broke
         || { echo "FAILED: probe checks; see above" >&2; exit 1; }
 else
     echo "config/broker.json has no aud yet: the unit is installed but not started."
-    echo "Create the workbench's Access app, set aud in config/broker.json, then rerun this script."
+    echo "Set aud in config/broker.json (the jobs Access app's audience), then rerun this script."
 fi
