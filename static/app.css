@@ -1,0 +1,92 @@
+/* jobs: bix design system (bix/CLAUDE.md). Tokens from bix.css, each with its
+   Mocha literal so the page renders if bix.css can't load. */
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bix-bg, #1e1e2e);
+  color: var(--bix-text, #cdd6f4);
+  font-family: var(--bix-sans, "Helvetica Neue", Helvetica, Arial, sans-serif);
+}
+main { max-width: 64rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+h1 { font-size: 2.6rem; margin: 1.5rem 0 1.25rem; }
+.bix-site { font-size: 0.85rem; color: var(--bix-text-faint, #6c7086); }
+.bix-site a { color: inherit; text-decoration: none; }
+.bix-site a:hover { color: var(--bix-text, #cdd6f4); }
+.bix-site .sep { margin: 0 0.5em; color: var(--bix-border-strong, #45475a); }
+.bix-dot { font-style: normal; color: var(--bix-accent, #fab387); }
+.bix-title { font-weight: 300; letter-spacing: -0.035em; line-height: 1.08; }
+.mono { font-family: var(--bix-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace); }
+
+/* Notices: collector warnings and the connection state, under the title. */
+#notices { margin-bottom: 1rem; }
+.notice {
+  display: flex; align-items: baseline; gap: 0.5rem;
+  margin: 0 0 0.35rem; font-size: 0.85rem;
+  color: var(--bix-warn, #f9e2af);
+}
+.notice.muted { color: var(--bix-text-muted, #7f849c); }
+
+/* Projects */
+section + section { margin-top: 2rem; }
+h2.bix-label {
+  font-size: 0.7rem; font-weight: 400; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--bix-text-faint, #6c7086);
+  margin: 0 0 0.6rem; padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--bix-border, #313244);
+}
+h2 .count { margin-left: 0.5em; letter-spacing: 0; }
+
+.tiles {
+  list-style: none; margin: 0; padding: 0;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); gap: 0.75rem;
+}
+.tile {
+  min-width: 0;
+  background: var(--bix-bg-sunken, #181825);
+  border: 1px solid var(--bix-border, #313244);
+  border-radius: 8px;
+  padding: 0.75rem 0.85rem;
+}
+.tile .head { display: flex; align-items: center; gap: 0.55rem; }
+.tile .name {
+  font-size: 0.95rem; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tile p { margin: 0.35rem 0 0; font-size: 0.85rem; overflow-wrap: anywhere; }
+.tile .needs { color: var(--bix-text, #cdd6f4); }
+.tile .detail {
+  color: var(--bix-text-muted, #7f849c);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tile .meta { color: var(--bix-text-muted, #7f849c); font-size: 0.8rem; }
+.tile .meta .sep { margin: 0 0.4em; color: var(--bix-border-strong, #45475a); }
+.tile.done .name, .tile.done p { color: var(--bix-text-faint, #6c7086); }
+
+.empty { color: var(--bix-text-muted, #7f849c); }
+
+/* Status marks: a distinct shape per status, so colour is never the only
+   signal (DESIGN.md §8). 12px box, centred on the first line. */
+.mark { position: relative; flex: none; display: inline-block; width: 12px; height: 12px; }
+.mark.needs-you { border: 1.5px solid var(--bix-warn, #f9e2af); border-radius: 50%; }
+.mark.needs-you::after {
+  content: "!"; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font: 700 8px/1 var(--bix-sans, "Helvetica Neue", Helvetica, Arial, sans-serif);
+  color: var(--bix-warn, #f9e2af);
+}
+.mark.stalled { border: 1.5px solid var(--bix-warn, #f9e2af); border-radius: 2px; }
+.mark.working::after {
+  content: ""; position: absolute; inset: 1px; border-radius: 50%;
+  background: var(--bix-ok, #a6e3a1);
+}
+.mark.idle { border: 1.5px solid var(--bix-text-muted, #7f849c); border-radius: 50%; }
+.mark.dead::before, .mark.dead::after {
+  content: ""; position: absolute; left: -1px; right: -1px; top: 5px; height: 2px;
+  background: var(--bix-danger, #f38ba8); border-radius: 1px;
+}
+.mark.dead::before { transform: rotate(45deg); }
+.mark.dead::after { transform: rotate(-45deg); }
+.mark.done::after {
+  content: ""; position: absolute; left: 1px; right: 1px; top: 5px; height: 2px;
+  background: var(--bix-text-faint, #6c7086); border-radius: 1px;
+}

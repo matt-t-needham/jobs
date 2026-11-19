@@ -1,0 +1,54 @@
+# jobs.bix.computer collector: reads Claude Code's files and writes the snapshot
+# the `jobs` container serves. Runs as matt (it must read ~/.claude) and so gets
+# nothing else: an empty /home with only its inputs bound in read-only, no
+# network at all, and one writable directory for the snapshot plus the hook
+# spool it drains. Installed by ../install-host.sh (copied, not symlinked).
+[Unit]
+Description=jobs.bix.computer collector
+After=local-fs.target
+
+[Service]
+Type=simple
+User=matt
+Group=matt
+ExecStart=/usr/bin/python3 -I /home/matt/apps/jobs/collector.py --config /home/matt/apps/jobs/config/bix.json --out /home/matt/jobs/snapshot/state.json
+Restart=on-failure
+RestartSec=5
+SyslogIdentifier=jobs-collector
+
+TemporaryFileSystem=/home
+BindReadOnlyPaths=/home/matt/apps/jobs/collector.py
+BindReadOnlyPaths=/home/matt/apps/jobs/config/bix.json
+# Directory binds pin the inode: if Claude Code ever recreates one of these
+# directories, restart this unit.
+BindReadOnlyPaths=/home/matt/.claude/sessions
+BindReadOnlyPaths=/home/matt/.claude/jobs
+BindReadOnlyPaths=/home/matt/.claude/projects
+BindPaths=/home/matt/jobs/snapshot
+BindPaths=/home/matt/jobs/spool
+
+PrivateNetwork=true
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=256M
+TasksMax=16
+
+[Install]
+WantedBy=multi-user.target

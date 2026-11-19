@@ -1,0 +1,9 @@
+{
+  "machine": { "id": "bix", "label": "bix" },
+  "site": { "name": "bix.computer", "url": "https://bix.computer/" },
+  "claudeDir": "~/.claude",
+  "spoolDir": "~/jobs/spool",
+  "projects": [
+    { "match": "~/apps", "id": "bix", "name": "bix", "repo": "first-dir" }
+  ]
+}
