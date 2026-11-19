@@ -34,6 +34,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # collector.py: redact(), text(), pid_alive()
 import collector  # noqa: E402
+from broker import todos as TODOS  # noqa: E402  (the package is importable from the repo root inserted above)
 
 log = logging.getLogger("broker")
 
@@ -44,6 +45,8 @@ TRANSCRIPT_QUIET_S = 10.0
 HISTORY_BYTES = 2 * 1024 * 1024  # the end of the transcript that history reads
 HISTORY_ITEMS = 300
 HISTORY_TEXT = 4000              # per message, in the Open view
+PR_CACHE_S = 60             # how long a repo's PR list is reused
+PR_MERGED_DAYS = 14         # merged PRs older than this leave the board
 MAX_TEXT = 20_000
 APPROVAL_TEXT = 300
 APPROVAL_TOOL = "mcp__jobs-approval__approve"
@@ -73,6 +76,8 @@ class Settings:
     ring: int = 2000
     terminal_stop_wait: float = 15.0
     release_wait: float = 30.0
+    todos_dir: Optional[Path] = None   # bix-infra/todos: one <project>.md per project
+    repos: Dict[str, str] = field(default_factory=dict)  # project name -> GitHub owner/repo
 
 
 @dataclass
@@ -317,6 +322,8 @@ class Broker:
         self.lock = threading.RLock()  # Session() is built under it, and it calls ring_for(), which takes it too
         self.drivers: Dict[str, Session] = {}
         self.by_ticket: Dict[str, Session] = {}
+        self.todo_lock = threading.Lock()   # one writer at a time for the todo files
+        self.pr_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
         self.rings: "OrderedDict[str, Ring]" = OrderedDict()
 
     MAX_HISTORY = 50  # sessions whose recent events the broker keeps in memory
@@ -511,6 +518,7 @@ class Broker:
         handler = {
             "start": self._start, "send": self._send, "events": self._events,
             "history": self._history,
+            "todos": self._todos, "todo_set": self._todo_set, "prs": self._prs,
             "approve": self._approve, "stop": self._stop, "release": self._release,
             "take_over": self._take_over,
         }.get(action)
@@ -623,6 +631,89 @@ class Broker:
         self.audit("approval", s.sid, None, True, "allow" if allow else "deny")
         return {"ok": True, "allow": allow}
 
+    # Projects, todos and pull requests (DESIGN.md §12) -------------------------
+
+    def _todo_files(self) -> Dict[str, Path]:
+        if self.cfg.todos_dir is None:
+            raise BrokerError("no todos directory is configured (todosDir)", 503)
+        return {p.stem: p for p in TODOS.project_files(self.cfg.todos_dir)}
+
+    def _todos(self, _req: Dict[str, Any], _sid: Optional[str]) -> Dict[str, Any]:
+        projects = []
+        for name, path in sorted(self._todo_files().items()):
+            try:
+                items = TODOS.read_project(path)
+            except OSError as e:
+                # Surface it: the page shows the error for this project, not an empty list.
+                projects.append({"name": name, "items": [], "error": f"cannot read the todo file: {e.strerror}"})
+                continue
+            projects.append({"name": name, "error": None, "items": [
+                {"id": i.id, "state": i.state, "text": i.text, "section": i.section} for i in items]})
+        return {"projects": projects}
+
+    def _todo_set(self, req: Dict[str, Any], _sid: Optional[str]) -> Dict[str, Any]:
+        project, item_id = req.get("project"), req.get("todoId")
+        expected, to = req.get("expected"), req.get("to")
+        if not (isinstance(project, str) and isinstance(item_id, str)
+                and isinstance(expected, int) and isinstance(to, int)
+                and not isinstance(expected, bool) and not isinstance(to, bool)):
+            raise BrokerError("project, todoId and the integer states expected and to are needed", 400)
+        files = self._todo_files()
+        if project not in files:
+            raise BrokerError("no such project", 404)
+        path = files[project]
+        with self.todo_lock:
+            try:
+                text = path.read_text()
+                updated = TODOS.set_state(text, item_id, expected, to)
+            except TODOS.TodoError as e:
+                raise BrokerError(str(e), 409)
+            TODOS.write_atomic(path, updated)
+        return {"project": project, "todoId": item_id, "state": to}
+
+    def _prs(self, _req: Dict[str, Any], _sid: Optional[str]) -> Dict[str, Any]:
+        """Each configured repo's pull requests, from gh as matt. Cached for PR_CACHE_S.
+        A repo that fails shows its error next to its name."""
+        now = time.time()
+        repos = []
+        for project, repo in sorted(self.cfg.repos.items()):
+            cached = self.pr_cache.get(project)
+            if cached and now - cached[0] < PR_CACHE_S:
+                repos.append(cached[1])
+                continue
+            entry = self._fetch_prs(project, repo)
+            self.pr_cache[project] = (now, entry)
+            repos.append(entry)
+        return {"repos": repos}
+
+    def _fetch_prs(self, project: str, repo: str) -> Dict[str, Any]:
+        cmd = ["gh", "pr", "list", "--repo", repo, "--state", "all", "--limit", "40",
+               "--json", "number,title,url,isDraft,state,headRefName,updatedAt,mergedAt"]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return {"project": project, "repo": repo, "prs": [], "error": f"gh could not run: {e.__class__.__name__}"}
+        if out.returncode != 0:
+            first = (out.stderr.strip().splitlines() or ["gh failed"])[0]
+            return {"project": project, "repo": repo, "prs": [], "error": first[:200]}
+        try:
+            rows = json.loads(out.stdout or "[]")
+        except ValueError:
+            return {"project": project, "repo": repo, "prs": [], "error": "gh returned something unreadable"}
+        cutoff = time.time() - PR_MERGED_DAYS * 86400
+        prs = []
+        for r in rows if isinstance(rows, list) else []:
+            if not isinstance(r, dict):
+                continue
+            merged = collector.iso_ms(r.get("mergedAt"))
+            if r.get("state") == "MERGED" and merged is not None and merged / 1000 < cutoff:
+                continue  # merged long ago: out of the board
+            prs.append({"number": r.get("number"), "title": str(r.get("title", ""))[:200],
+                        "url": r.get("url") if str(r.get("url", "")).startswith("https://github.com/") else None,
+                        "state": r.get("state"), "draft": bool(r.get("isDraft")),
+                        "branch": str(r.get("headRefName", ""))[:120], "updatedAt": collector.iso_ms(r.get("updatedAt"))})
+        return {"project": project, "repo": repo, "prs": prs, "error": None}
+
     @staticmethod
     def _text(req: Dict[str, Any]) -> str:
         text = req.get("text")
@@ -704,11 +795,17 @@ def load_settings(raw: Dict[str, Any]) -> Settings:
     roots = [Path(os.path.realpath(os.path.expanduser(r))) for r in raw.get("roots", ["~/apps"])]
     if not raw.get("aud") or not raw.get("team"):
         raise SystemExit("broker config needs aud and team (the Access app's audience and team domain)")
+    todos_dir = raw.get("todosDir")
+    repos = raw.get("repos", {})
+    if not isinstance(repos, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in repos.items()):
+        raise SystemExit("config repos must map project names to owner/repo strings")
     return Settings(
         socket_path=state / "broker.sock", approval_path=state / "approval.sock", state_dir=state,
         claude_bin=os.path.expanduser(raw.get("claudeBin", str(home / ".local/bin/claude"))),
         claude_home=Path(os.path.expanduser(raw.get("claudeDir", "~/.claude"))),
         roots=roots, aud=raw["aud"], team=raw["team"],
+        todos_dir=Path(os.path.expanduser(todos_dir)) if todos_dir else None,
+        repos=repos,
     )
 
 

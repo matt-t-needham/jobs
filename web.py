@@ -144,8 +144,10 @@ async def event_stream(body: Callable[[], str], disconnected: Callable[[], Await
         await sleep(1)
 
 
-WORKBENCH_ACTIONS = ("start", "send", "events", "history", "approve", "stop", "release", "take_over")
-WORKBENCH_FIELDS = ("sessionId", "text", "model", "after", "clientId", "approvalId", "allow")
+WORKBENCH_ACTIONS = ("start", "send", "events", "history", "approve", "stop", "release", "take_over",
+                     "todos", "todo_set", "prs")
+WORKBENCH_FIELDS = ("sessionId", "text", "model", "after", "clientId", "approvalId", "allow",
+                    "project", "todoId", "expected", "to")
 
 
 def broker_call(socket_path: str, req: Dict[str, Any]) -> Dict[str, Any]:
