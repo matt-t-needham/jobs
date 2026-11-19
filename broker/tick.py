@@ -21,18 +21,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from broker import todos as TODOS  # noqa: E402
 
 PROJECTS_PER_TICK = 3
-MAX_RUNNING = 3
+MAX_RUNNING = 3          # agents this tick has started that are still running (not manual ones)
+SESSION_LIMIT_PCT = 85   # "daily": the CLI's "Current session" figure
+WEEK_LIMIT_PCT = 75      # "Current week (all models)"
+USAGE_LINE = re.compile(r"^(Current session|Current week \(all models\)):\s*(\d+)% used", re.MULTILINE)
 # What an agent may do without a person watching. Everything else is refused in -p mode.
 ALLOWED_TOOLS = ",".join([
     "Read", "Edit", "Write", "Glob", "Grep",
@@ -54,6 +58,37 @@ def pick(projects: Dict[str, List[TODOS.Item]], busy: set) -> List[Tuple[str, TO
         if len(chosen) == PROJECTS_PER_TICK:
             break
     return chosen
+
+
+def parse_usage(text: str) -> Tuple[int, int]:
+    """(session %, week %) from `claude -p /usage`. Raises if either figure is missing."""
+    found = {label: int(pct) for label, pct in USAGE_LINE.findall(text)}
+    session = found.get("Current session")
+    week = found.get("Current week (all models)")
+    if session is None or week is None:
+        raise RuntimeError("the usage output has no session and week figures")
+    return session, week
+
+
+def read_usage(claude_bin: str) -> Tuple[int, int]:
+    """The subscription's usage, from the CLI. Any failure is an error, so nothing starts."""
+    try:
+        out = subprocess.run([claude_bin, "-p", "/usage", "--output-format", "text"],
+                             capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise RuntimeError(f"claude /usage could not run: {e.__class__.__name__}")
+    if out.returncode != 0:
+        raise RuntimeError("claude /usage failed")
+    return parse_usage(out.stdout)
+
+
+def usage_block(session_pct: int, week_pct: int) -> Optional[str]:
+    """Why no agent may start, or None when the usage is under both limits."""
+    if week_pct > WEEK_LIMIT_PCT:
+        return f"the week is at {week_pct}% (limit {WEEK_LIMIT_PCT}%)"
+    if session_pct > SESSION_LIMIT_PCT:
+        return f"the current session is at {session_pct}% (limit {SESSION_LIMIT_PCT}%)"
+    return None
 
 
 def pid_running(pid: int) -> bool:
@@ -141,7 +176,7 @@ def close_merged(projects: Dict[str, Tuple[Path, List[TODOS.Item]]], repos: Dict
     return done
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[List[str]] = None, usage: Optional[Callable[[], Tuple[int, int]]] = None) -> int:
     ap = argparse.ArgumentParser(description="daily project tick")
     ap.add_argument("--config", required=True, type=Path)
     args = ap.parse_args(argv)
@@ -150,6 +185,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     todos_repo = Path(os.path.expanduser(raw["todosRepo"]))
     state_dir = Path(os.path.expanduser(raw.get("stateDir", "~/jobs/broker")))
     claude_bin = os.path.expanduser(raw.get("claudeBin", "~/.local/bin/claude"))
+    usage_of = usage or (lambda: read_usage(claude_bin))
     repos: Dict[str, str] = raw.get("repos", {})
     dirs: Dict[str, str] = raw.get("projectDirs", {})
 
@@ -159,6 +195,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     for line in close_merged(projects, repos, todos_repo):
         print(f"CLOSED {line}")
+
+    # The usage gate: a tick never starts an agent when the subscription is close to its limits,
+    # and it never starts one when the usage can't be read.
+    try:
+        session_pct, week_pct = usage_of()
+    except RuntimeError as e:
+        print(f"FAILED: cannot read the usage, so nothing is started: {e}")
+        return 1
+    why = usage_block(session_pct, week_pct)
+    if why:
+        print(f"NOT STARTING: {why}")
+        return 0
 
     agents_file = state_dir / "agents.json"
     agents = json.loads(agents_file.read_text()) if agents_file.exists() else {}

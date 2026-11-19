@@ -589,10 +589,13 @@ a request names. Revisit when credits or the subscription change.
 `todos`, `todo_set` and `prs`, and the board's Projects view with the todo list and PR
 links.
 
-**Built: the daily tick** (`broker/tick.py`, cron as matt, once a day). It closes any
+**Built: the daily tick** (`broker/tick.py`, cron as matt, at 22:30 each day). It first reads
+the subscription usage from `claude -p /usage`. If the week is above 75% or the current
+session is above 85%, or the usage can't be read, it starts nothing. Otherwise it closes any
 in-progress todo whose `todo-<id>` PR has merged (2→3), then starts at most three agents,
 one per project with no item in progress, each on that project's oldest approved todo
-(1→2). At most `MAX_RUNNING` (3) agents run at once; a tick at the cap starts nothing. An
+(1→2). At most `MAX_RUNNING` (3) agents that this tick started run at once; agents
+started by hand don't count. A tick at the cap starts nothing. An
 agent is `claude -p` (Opus) in its own worktree on `todo-<id>`. It may read and edit, run git,
 `gh pr create`, the tests and `docker build`; anything else is refused without a person
 watching. It opens a draft PR and stops. Every state change is committed to the todos

@@ -71,7 +71,7 @@ def world(tmp_path, monkeypatch):
 
 
 def test_a_tick_starts_three_projects_and_records_the_moves(world):
-    rc = TICK.main(["--config", str(world["cfg"])])
+    rc = TICK.main(["--config", str(world["cfg"])], usage=lambda: (0, 0))
     assert rc == 0
     todos_dir = world["todos_repo"] / "todos"
     states = {p: TODOS.read_project(todos_dir / f"{p}.md")[0].state for p in PROJECTS}
@@ -93,6 +93,45 @@ def test_a_tick_at_the_cap_starts_nothing(world):
                            "started": 0, "worktree": ""} for n in range(TICK.MAX_RUNNING)}
     (state / "agents.json").write_text(json.dumps(live))
     before = git(world["todos_repo"], "rev-parse", "HEAD")
-    assert TICK.main(["--config", str(world["cfg"])]) == 0
+    assert TICK.main(["--config", str(world["cfg"])], usage=lambda: (0, 0)) == 0
     assert git(world["todos_repo"], "rev-parse", "HEAD") == before
     assert len(json.loads((state / "agents.json").read_text())) == TICK.MAX_RUNNING
+
+
+SAMPLE = """You are currently using your subscription to power your Claude Code usage
+
+Current session: 71% used · resets Nov 19, 11:19am (America/Los_Angeles)
+Current week (all models): 37% used · resets Nov 22, 10:59am (America/Los_Angeles)
+"""
+
+
+def test_the_usage_figures_are_read_from_the_cli_output():
+    assert TICK.parse_usage(SAMPLE) == (71, 37)
+    with pytest.raises(RuntimeError, match="no session and week"):
+        TICK.parse_usage("Current session: 71% used")
+
+
+@pytest.mark.parametrize("session,week,blocked", [
+    (85, 75, False),   # at the limits: still allowed
+    (86, 10, True),    # one point over the session limit
+    (10, 76, True),    # one point over the week limit
+])
+def test_the_usage_limits_are_strictly_above(session, week, blocked):
+    assert (TICK.usage_block(session, week) is not None) == blocked
+
+
+def test_a_tick_over_the_usage_limit_starts_nothing(world, capsys):
+    before = git(world["todos_repo"], "rev-parse", "HEAD")
+    assert TICK.main(["--config", str(world["cfg"])], usage=lambda: (10, 90)) == 0
+    assert "NOT STARTING: the week is at 90%" in capsys.readouterr().out
+    assert git(world["todos_repo"], "rev-parse", "HEAD") == before
+    assert not (world["state"] / "agents.json").exists()
+
+
+def test_a_tick_that_cannot_read_the_usage_starts_nothing(world, capsys):
+    def broken():
+        raise RuntimeError("claude /usage failed")
+    before = git(world["todos_repo"], "rev-parse", "HEAD")
+    assert TICK.main(["--config", str(world["cfg"])], usage=broken) == 1
+    assert "FAILED: cannot read the usage" in capsys.readouterr().out
+    assert git(world["todos_repo"], "rev-parse", "HEAD") == before
