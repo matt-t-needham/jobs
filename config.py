@@ -24,6 +24,9 @@ STALE_SECONDS = int(os.environ.get("STALE_SECONDS", "120"))
 # app fails closed. Unset ACCESS_AUD refuses every request, unless LOCAL_ONLY.
 ACCESS_TEAM_DOMAIN = os.environ.get("ACCESS_TEAM_DOMAIN", "bixcomputer.cloudflareaccess.com")
 ACCESS_AUD = os.environ.get("ACCESS_AUD", "")
+# The broker's unix socket (workbench, phase 3). Unset: the Open view's routes
+# answer 404 and the page's workbench features are off.
+BROKER_SOCKET = os.environ.get("JOBS_BROKER_SOCKET", "")
 # A laptop instance on 127.0.0.1 with no Access in front: no JWT check, and the
 # Host header must be localhost or 127.0.0.1 (so DNS rebinding can't read it).
 LOCAL_ONLY = os.environ.get("LOCAL_ONLY", "") == "1"

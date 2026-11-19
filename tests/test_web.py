@@ -98,6 +98,33 @@ def test_context_serves_only_listed_tasks_and_known_turn_fields(local, monkeypat
     assert c.get("/api/tasks/..%2Fs1/context").status_code == 404
 
 
+def test_workbench_is_off_without_a_broker_socket(local, monkeypatch):
+    monkeypatch.setattr(config, "BROKER_SOCKET", "")
+    r = client(web.Store()).post("/api/workbench/events", json={"sessionId": "x"})
+    assert r.status_code == 404
+
+
+def test_workbench_forwards_only_known_fields_and_the_visitors_token(local, monkeypatch):
+    monkeypatch.setattr(config, "BROKER_SOCKET", "/nonexistent.sock")
+    seen = {}
+
+    def fake(socket_path, req):
+        seen.update(req)
+        return {"ok": False, "status": 409, "error": "busy"}
+
+    monkeypatch.setattr(web, "broker_call", fake)
+    r = client(web.Store()).post(
+        "/api/workbench/send", json={"sessionId": "s", "text": "hi", "cwd": "/etc", "token": "mine"},
+        headers={"cf-access-jwt-assertion": "visitor-jwt"})
+    assert r.status_code == 409 and r.json()["error"] == "busy"
+    assert seen == {"action": "send", "token": "visitor-jwt", "sessionId": "s", "text": "hi"}
+
+
+def test_workbench_refuses_actions_it_doesnt_proxy(local, monkeypatch):
+    monkeypatch.setattr(config, "BROKER_SOCKET", "/nonexistent.sock")
+    assert client(web.Store()).post("/api/workbench/approval_request", json={}).status_code == 404
+
+
 def test_no_snapshot_yet(local):
     c = client(web.Store())
     assert c.get("/api/state").json()["warnings"] == ["Waiting for the collector's first snapshot."]

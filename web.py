@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import re
+import socket
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -143,6 +144,29 @@ async def event_stream(body: Callable[[], str], disconnected: Callable[[], Await
         await sleep(1)
 
 
+WORKBENCH_ACTIONS = ("start", "send", "events", "approve", "stop", "release", "take_over")
+WORKBENCH_FIELDS = ("sessionId", "text", "model", "after", "clientId", "approvalId", "allow")
+
+
+def broker_call(socket_path: str, req: Dict[str, Any]) -> Dict[str, Any]:
+    """One request to the broker's socket. A missing or failed broker is a 503 the page can show."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(30)
+            s.connect(socket_path)
+            s.sendall((json.dumps(req) + "\n").encode())
+            line = s.makefile("rb").readline()
+    except OSError as e:
+        log.error("broker call FAILED: %s", e.strerror or e.__class__.__name__)
+        return {"ok": False, "status": 503, "error": "the workbench broker isn't reachable"}
+    try:
+        resp = json.loads(line)
+    except ValueError:
+        log.error("broker reply FAILED: not JSON")
+        return {"ok": False, "status": 502, "error": "the broker sent an unreadable reply"}
+    return resp if isinstance(resp, dict) else {"ok": False, "status": 502, "error": "the broker sent an unexpected reply"}
+
+
 def create_app(store: Store) -> FastAPI:
     app = FastAPI(title="jobs", docs_url=None, redoc_url=None, openapi_url=None)
     if config.LOCAL_ONLY:
@@ -216,6 +240,26 @@ def create_app(store: Store) -> FastAPI:
                 and isinstance(t.get("text"), str)]
         return JSONResponse({"sessionId": task_id, "updatedAt": raw.get("updatedAt"), "turns": kept},
                             headers=headers)
+
+    @app.post("/api/workbench/{action}", dependencies=gated)
+    async def workbench(action: str, request: Request):
+        """Forwards one Open-view action to the broker. The broker checks the Access
+        JWT itself, so this passes the visitor's token along and nothing else from
+        the headers. Only the fields below go through."""
+        if not config.BROKER_SOCKET or action not in WORKBENCH_ACTIONS:
+            raise HTTPException(status_code=404, detail="not found")
+        try:
+            body = await request.json()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="not JSON")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="not an object")
+        req = {k: body[k] for k in WORKBENCH_FIELDS if k in body}
+        req["action"] = action
+        req["token"] = request.headers.get("cf-access-jwt-assertion", "")
+        resp = await asyncio.to_thread(broker_call, config.BROKER_SOCKET, req)
+        status = resp.pop("status", 200) if not resp.get("ok") else 200
+        return JSONResponse(resp, status_code=status, headers={"Cache-Control": "no-store"})
 
     @app.get("/api/events", dependencies=gated)
     async def events(request: Request):

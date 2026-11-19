@@ -135,6 +135,58 @@ h2 .count { margin-left: 0.5em; letter-spacing: 0; }
   font-size: 0.7rem; letter-spacing: 0.1em; text-transform: uppercase;
   color: var(--bix-text-faint, #6c7086);
 }
+.open-link { margin-left: 0; }
+
+/* Open view: the conversation, the approval cards and the composer. */
+.log {
+  max-height: 55vh; overflow-y: auto; padding: 0.25rem 0 0.75rem;
+  border-bottom: 1px solid var(--bix-border, #313244);
+}
+.msg { padding: 0.5rem 0; }
+.msg + .msg { border-top: 1px solid var(--bix-border, #313244); }
+.msg.note .turn-text, .msg.tool .turn-text { color: var(--bix-text-muted, #7f849c); font-size: 0.85rem; }
+.msg.live .turn-text { color: var(--bix-text-soft, #bac2de); }
+.msg .who {
+  font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--bix-text-faint, #6c7086);
+}
+.v-label {
+  margin: 0; font-size: 0.7rem; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--bix-text-faint, #6c7086);
+}
+.approval {
+  margin: 0.75rem 0; padding: 0.7rem 0.8rem;
+  background: var(--bix-bg-sunken, #181825);
+  border: 1px solid var(--bix-border-strong, #45475a); border-radius: 8px;
+}
+.approval .turn-text { margin: 0.3rem 0 0.6rem; font-family: var(--bix-mono, ui-monospace, monospace); font-size: 0.85rem; }
+.composer { margin-top: 0.75rem; }
+.composer textarea {
+  width: 100%; min-height: 44px; resize: vertical;
+  font: 16px/1.4 var(--bix-sans, "Helvetica Neue", Helvetica, Arial, sans-serif);
+  color: var(--bix-text, #cdd6f4); background: var(--bix-bg-sunken, #181825);
+  border: 1px solid var(--bix-border-strong, #45475a); border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+}
+.composer-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+.composer select {
+  min-height: 44px; font-size: 16px; padding: 0 0.6rem;
+  color: var(--bix-text, #cdd6f4); background: var(--bix-bg-sunken, #181825);
+  border: 1px solid var(--bix-border-strong, #45475a); border-radius: 8px;
+}
+.btn {
+  min-height: 44px; min-width: 44px; padding: 0 1rem;
+  font: inherit; font-size: 0.95rem;
+  color: var(--bix-on-accent, #1e1e2e); background: var(--bix-accent, #fab387);
+  border: 1px solid var(--bix-accent, #fab387); border-radius: 8px; cursor: pointer;
+}
+.btn.quiet {
+  color: var(--bix-text, #cdd6f4); background: transparent;
+  border-color: var(--bix-border-strong, #45475a);
+}
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn[hidden], .composer [hidden] { display: none; }
+
 .turn { padding: 0.5rem 0; }
 .turn + .turn { border-top: 1px solid var(--bix-border, #313244); }
 .turn .who {

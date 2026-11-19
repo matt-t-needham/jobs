@@ -25,6 +25,9 @@ bix-specific goes in code: it lives in `config/bix.json`, compose and the unit.
 |------|------|
 | `collector.py` | Stdlib only, Python 3.9 syntax, one file (`python3 -I` can't import siblings). Reads `sessions/`, `jobs/*/state.json`, transcript tails (`gitBranch`, `cost-state`, the viewport's goal/now/turns) and the hook spool; maps cwd → project; derives the status; writes `state.json` atomically and the per-task context slices (`contextDir`). Copies fields by name into `TASK_KEYS`, never whole records. Redaction for viewport text is `redact()` |
 | `status_mcp.py` | The `report_status` MCP tool (stdio, user-level `jobs-status`). Writes `cards/<sessionId>.json`; the session is the server's parent pid. Stdlib only, `python3 -I`. Re-register after moving the checkout: `claude mcp add --scope user jobs-status -- python3 -I <path>/status_mcp.py` |
+| `broker/broker.py` | Workbench broker (host, matt, `jobs-broker.service`): drives `claude -p` stream-json sessions for the Open view. Two unix sockets (`broker.sock` for the web, `approval.sock` for approvals, never mixed; only the web one is mounted into a container). Access JWT checked on every web action. Design: DESIGN.md §9a. Config `config/broker.json` (empty `aud` = refuses to start) |
+| `broker/approval.py` | The `approve` permission-prompt MCP tool for broker sessions. Asks the broker's approval socket and blocks; any failure is a deny |
+| `broker/probe.py` | Checks a running broker's front door: socket modes, refusals, no TCP listener. Run after `install-broker.sh` |
 | `hook.py` | Claude Code hook → one JSON file per event in the spool. Keeps event, session id, time, and for Notification its type and message only. Exit 1 on failure (non-blocking) |
 | `web.py` | FastAPI: `/` + `/static/app.{js,css}`, `/api/state`, `/api/tasks/<id>/context` (a listed task's turn slice), `/api/events` (SSE, full view on change, keepalive 15 s), `/healthz` (503 when the snapshot is older than `STALE_SECONDS`). Follows the snapshot file (`JOBS_SNAPSHOT`) or runs the collector in a thread (`JOBS_CONFIG`). Context slices come from `JOBS_CONTEXT` |
 | `auth.py` | Access JWT on every route but `/healthz`; unset `ACCESS_AUD` refuses all. `LOCAL_ONLY=1` (laptop) skips it and only accepts Host `localhost`/`127.0.0.1` |
@@ -52,6 +55,10 @@ bix-specific goes in code: it lives in `config/bix.json`, compose and the unit.
   listed ids. The collector's `contextDir` and the container's `JOBS_CONTEXT` mount
   both need `sudo bash install-host.sh` (creates `~/jobs/context`) before the
   compose `jobs` service can start with the mount.
+- **The broker's directory is never mounted.** `~/jobs/broker/` holds the approval
+  tickets (in `run/`) and the audit log. A container gets `broker.sock` alone, bind-mounted
+  as a file, and `JOBS_BROKER_SOCKET` points at it. Mounting the directory would let a
+  container read a ticket.
 - **`--once` doesn't drain the spool**, so it's safe while the unit runs.
 - **Cost appears late on a fresh start.** `cost-state` is read only from the
   last 256 KB of a transcript and from what's appended after.

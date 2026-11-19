@@ -1,0 +1,9 @@
+{
+  "_comment": "Workbench broker (broker/broker.py). aud stays empty until the workbench's Access app exists: the broker refuses to start without it, and every request is refused without a valid Access token for that audience.",
+  "aud": "",
+  "team": "bixcomputer.cloudflareaccess.com",
+  "roots": ["~/apps"],
+  "stateDir": "~/jobs/broker",
+  "claudeBin": "~/.local/bin/claude",
+  "claudeDir": "~/.claude"
+}
