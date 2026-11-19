@@ -5,5 +5,18 @@
   "roots": ["~/apps"],
   "stateDir": "~/jobs/broker",
   "claudeBin": "~/.local/bin/claude",
-  "claudeDir": "~/.claude"
+  "claudeDir": "~/.claude",
+  "todosDir": "~/apps/bix-infra/todos",
+  "repos": {
+    "bix-ai": "matt-t-needham/bix-ai",
+    "bix-finances": "matt-t-needham/bix-finances",
+    "demucs": "matt-t-needham/bix-demucs",
+    "health": "matt-t-needham/health",
+    "infra": "matt-t-needham/bix-infra",
+    "inkplate_dash": "matt-t-needham/inkplate",
+    "jobs": "matt-t-needham/jobs",
+    "tour_tracker": "matt-t-needham/tours",
+    "watch": "matt-t-needham/watch",
+    "av_control": "matt-t-needham/remote"
+  }
 }
