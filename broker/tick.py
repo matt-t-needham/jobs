@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""The daily project tick (workbench plan §12, DESIGN.md §12).
+"""The project tick (workbench plan §12, DESIGN.md §12).
 
-Cron runs this once a day, as matt. It does two things, in order:
+Cron runs this every ten minutes from 22:00 to 04:50, as matt. It acts once per
+five-hour usage window: at the first run after the window begins, when that window began
+after 22:00 local time. Then, in order:
 
-  1. Closes out in-progress todos whose PR has merged (2 -> 3).
-  2. Starts a project agent on the oldest approved todo of up to PROJECTS_PER_TICK
-     projects (1 -> 2). A project with an item already in progress is skipped, and no more
-     than MAX_RUNNING agents run at once.
+  1. Checks the subscription usage (`claude -p /usage`). It starts nothing if the week is at
+     or above WEEK_LIMIT_PCT, or the current 5-hour session is at or above SESSION_LIMIT_PCT
+     (it must be below 80%), or the usage can't be read.
+  2. Closes out in-progress todos whose PR has merged (2 -> 3).
+  3. Starts a project agent on the oldest approved todo of up to PROJECTS_PER_TICK
+     projects (1 -> 2). A project with an item already in progress is skipped. At most
+     MAX_RUNNING agents that this tick started are running at once; agents started by hand
+     don't count.
 
-An agent is `claude -p` in its own git worktree, on branch todo-<id>. It implements the
-todo, opens a draft PR and stops. It never merges. The state change is committed to the
-todos checkout (CLAUDE.md commit policy) once the agent has started.
+An agent is `claude -p` (Opus) in its own git worktree, on branch todo-<id>. It implements
+the todo, opens a draft PR and stops. It never merges. Each state change is committed to the
+todos checkout (CLAUDE.md commit policy).
 
     python3 -I broker/tick.py --config config/broker.json
 
@@ -26,23 +32,36 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from broker import todos as TODOS  # noqa: E402
 
 PROJECTS_PER_TICK = 3
-MAX_RUNNING = 3          # agents this tick has started that are still running (not manual ones)
-SESSION_LIMIT_PCT = 85   # "daily": the CLI's "Current session" figure
-WEEK_LIMIT_PCT = 75      # "Current week (all models)"
-USAGE_LINE = re.compile(r"^(Current session|Current week \(all models\)):\s*(\d+)% used", re.MULTILINE)
+MAX_RUNNING = 3            # agents this tick has started that are still running (not manual ones)
+SESSION_LIMIT_PCT = 80     # the 5-hour "Current session": start only while it is below this
+WEEK_LIMIT_PCT = 75        # "Current week (all models)": refuse above this
+SESSION_WINDOW = timedelta(hours=5)
+NIGHT_START_HOUR = 22      # windows must begin at or after this local hour
+LOCAL_TZ: tzinfo = ZoneInfo("America/Los_Angeles")  # the timezone the CLI reports reset times in
+USAGE_LINE = re.compile(r"^(Current session|Current week \(all models\)):\s*(\d+)% used(.*)$", re.MULTILINE)
+RESETS = re.compile(r"resets (.+?) \(")
 # What an agent may do without a person watching. Everything else is refused in -p mode.
 ALLOWED_TOOLS = ",".join([
     "Read", "Edit", "Write", "Glob", "Grep",
     "Bash(git:*)", "Bash(gh pr create:*)", "Bash(gh pr view:*)",
     "Bash(python3:*)", "Bash(python3 -m pytest:*)", "Bash(docker build:*)",
 ])
+
+
+@dataclass
+class Usage:
+    session: int                     # percent of the current 5-hour window used
+    week: int                        # percent of the week used
+    session_resets: Optional[str]    # the CLI's reset time for the window, as printed, or None
 
 
 def pick(projects: Dict[str, List[TODOS.Item]], busy: set) -> List[Tuple[str, TODOS.Item]]:
@@ -60,17 +79,59 @@ def pick(projects: Dict[str, List[TODOS.Item]], busy: set) -> List[Tuple[str, TO
     return chosen
 
 
-def parse_usage(text: str) -> Tuple[int, int]:
-    """(session %, week %) from `claude -p /usage`. Raises if either figure is missing."""
-    found = {label: int(pct) for label, pct in USAGE_LINE.findall(text)}
-    session = found.get("Current session")
-    week = found.get("Current week (all models)")
-    if session is None or week is None:
+def parse_usage(text: str) -> Usage:
+    """The usage from `claude -p /usage`. Raises if the session or week figure is missing."""
+    found: Dict[str, Tuple[int, str]] = {}
+    for label, pct, rest in USAGE_LINE.findall(text):
+        resets = RESETS.search(rest)
+        found[label] = (int(pct), resets.group(1) if resets else None)
+    if "Current session" not in found or "Current week (all models)" not in found:
         raise RuntimeError("the usage output has no session and week figures")
-    return session, week
+    session_pct, session_resets = found["Current session"]
+    return Usage(session=session_pct, week=found["Current week (all models)"][0],
+                 session_resets=session_resets)
 
 
-def read_usage(claude_bin: str) -> Tuple[int, int]:
+def parse_reset(text: str, now: datetime) -> datetime:
+    """'Nov 19, 11:19am' in the CLI's timezone, as an aware datetime near `now`."""
+    try:
+        parsed = datetime.strptime(text.strip(), "%b %d, %I:%M%p")
+    except ValueError:
+        raise RuntimeError(f"cannot read the reset time {text!r}")
+    dt = parsed.replace(year=now.year, tzinfo=LOCAL_TZ)
+    if dt < now - timedelta(days=180):   # a December reset read in January
+        dt = dt.replace(year=now.year + 1)
+    elif dt > now + timedelta(days=180):
+        dt = dt.replace(year=now.year - 1)
+    return dt
+
+
+def window_start(usage: Usage, now: datetime) -> datetime:
+    """When the current 5-hour window began. With no window running, it begins now."""
+    if usage.session_resets is None:
+        return now
+    return parse_reset(usage.session_resets, now) - SESSION_WINDOW
+
+
+def due(start: datetime, now: datetime, last_handled: Optional[int]) -> bool:
+    """True for the first run of a window that began after NIGHT_START_HOUR, while it has begun
+    and not been handled yet."""
+    night = now.replace(hour=NIGHT_START_HOUR, minute=0, second=0, microsecond=0)
+    if night > now:
+        night -= timedelta(days=1)
+    return start >= night and start <= now and int(start.timestamp()) != last_handled
+
+
+def usage_block(usage: Usage) -> Optional[str]:
+    """Why no agent may start, or None when both figures are under their limits."""
+    if usage.week > WEEK_LIMIT_PCT:
+        return f"the week is at {usage.week}% (limit {WEEK_LIMIT_PCT}%)"
+    if usage.session >= SESSION_LIMIT_PCT:
+        return f"the current session is at {usage.session}% (it must be below {SESSION_LIMIT_PCT}%)"
+    return None
+
+
+def read_usage(claude_bin: str) -> Usage:
     """The subscription's usage, from the CLI. Any failure is an error, so nothing starts."""
     try:
         out = subprocess.run([claude_bin, "-p", "/usage", "--output-format", "text"],
@@ -80,15 +141,6 @@ def read_usage(claude_bin: str) -> Tuple[int, int]:
     if out.returncode != 0:
         raise RuntimeError("claude /usage failed")
     return parse_usage(out.stdout)
-
-
-def usage_block(session_pct: int, week_pct: int) -> Optional[str]:
-    """Why no agent may start, or None when the usage is under both limits."""
-    if week_pct > WEEK_LIMIT_PCT:
-        return f"the week is at {week_pct}% (limit {WEEK_LIMIT_PCT}%)"
-    if session_pct > SESSION_LIMIT_PCT:
-        return f"the current session is at {session_pct}% (limit {SESSION_LIMIT_PCT}%)"
-    return None
 
 
 def pid_running(pid: int) -> bool:
@@ -176,8 +228,10 @@ def close_merged(projects: Dict[str, Tuple[Path, List[TODOS.Item]]], repos: Dict
     return done
 
 
-def main(argv: Optional[List[str]] = None, usage: Optional[Callable[[], Tuple[int, int]]] = None) -> int:
-    ap = argparse.ArgumentParser(description="daily project tick")
+def main(argv: Optional[List[str]] = None,
+         usage: Optional[Callable[[], Usage]] = None,
+         now: Optional[datetime] = None) -> int:
+    ap = argparse.ArgumentParser(description="project tick")
     ap.add_argument("--config", required=True, type=Path)
     args = ap.parse_args(argv)
     raw = json.loads(args.config.read_text())
@@ -186,27 +240,37 @@ def main(argv: Optional[List[str]] = None, usage: Optional[Callable[[], Tuple[in
     state_dir = Path(os.path.expanduser(raw.get("stateDir", "~/jobs/broker")))
     claude_bin = os.path.expanduser(raw.get("claudeBin", "~/.local/bin/claude"))
     usage_of = usage or (lambda: read_usage(claude_bin))
+    now = now or datetime.now(LOCAL_TZ)
     repos: Dict[str, str] = raw.get("repos", {})
     dirs: Dict[str, str] = raw.get("projectDirs", {})
+
+    # Once per window: the window must have begun after NIGHT_START_HOUR, and not been handled.
+    tick_file = state_dir / "tick.json"
+    tick_state = json.loads(tick_file.read_text()) if tick_file.exists() else {}
+    try:
+        usage_now = usage_of()
+        start = window_start(usage_now, now)
+    except RuntimeError as e:
+        print(f"FAILED: cannot read the usage, so nothing is started: {e}")
+        return 1
+    if not due(start, now, tick_state.get("window")):
+        return 0  # not this window; quiet, because cron runs this every ten minutes
+
+    tick_state["window"] = int(start.timestamp())
+    state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tick_file.write_text(json.dumps(tick_state))
+    print(f"WINDOW {start.isoformat()}: session {usage_now.session}%, week {usage_now.week}%")
+
+    why = usage_block(usage_now)
+    if why:
+        print(f"NOT STARTING: {why}")
+        return 0
 
     projects: Dict[str, Tuple[Path, List[TODOS.Item]]] = {}
     for path in TODOS.project_files(todos_dir):
         projects[path.stem] = (path, TODOS.read_project(path))
-
     for line in close_merged(projects, repos, todos_repo):
         print(f"CLOSED {line}")
-
-    # The usage gate: a tick never starts an agent when the subscription is close to its limits,
-    # and it never starts one when the usage can't be read.
-    try:
-        session_pct, week_pct = usage_of()
-    except RuntimeError as e:
-        print(f"FAILED: cannot read the usage, so nothing is started: {e}")
-        return 1
-    why = usage_block(session_pct, week_pct)
-    if why:
-        print(f"NOT STARTING: {why}")
-        return 0
 
     agents_file = state_dir / "agents.json"
     agents = json.loads(agents_file.read_text()) if agents_file.exists() else {}
@@ -244,7 +308,6 @@ def main(argv: Optional[List[str]] = None, usage: Optional[Callable[[], Tuple[in
             continue
         print(f"STARTED {name}: {item.text} (branch {entry['branch']}, pid {entry['pid']})")
 
-    agents_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     agents_file.write_text(json.dumps(agents))
     return 1 if failures else 0
 
