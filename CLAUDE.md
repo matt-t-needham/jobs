@@ -35,7 +35,7 @@ bix-specific goes in code: it lives in `config/bix.json`, compose and the unit.
 
 - **The container never sees `~/.claude`.** Only the host unit reads it, with
   an empty `/home`, read-only binds of `sessions`, `jobs`, `projects` and no
-  network. Keep it that way (suite rule: never mount the host `~/.claude`).
+  network.
 - **Those binds pin directory inodes.** If Claude Code ever recreates one of
   the three directories, restart `jobs-collector`.
 - **Names stay out of logs.** `logs/` is readable by ai-router and the agent
