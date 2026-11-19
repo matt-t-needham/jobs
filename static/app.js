@@ -233,16 +233,20 @@ function viewport(t) {
 }
 
 // ---------------------------------------------------------------- Open view
-// The conversation with one session, through the broker (workbench plan §1):
-// it streams the reply, shows approval cards, and sends the next message. The
-// composer is mounted once per session and kept across polls, so typing survives.
+// The whole conversation with one session, through the broker (workbench plan §1).
+// On open it loads the transcript from disk, so a terminal session shows its history,
+// then follows live events by number. New rows are appended, never rebuilt, so the page
+// doesn't flicker and the scroll position holds. The composer is built once per session
+// and kept across polls, so typing survives.
 
 function openId() {
   const m = /^#open=([A-Za-z0-9_-]{1,64})$/.exec(location.hash);
   return m ? m[1] : null;
 }
 
-let openSession = null; // { id, after, items, pending, approvals, driver, busy, error, inFlight, timer }
+// The session being viewed. `rendered` counts the items already in the log;
+// `live` is the streaming reply's row, which is kept at the end and updated in place.
+let openSession = null;
 
 async function api(action, body) {
   const r = await fetch("/api/workbench/" + action, {
@@ -257,6 +261,21 @@ async function api(action, body) {
     throw new Error(data.error || ("request failed: HTTP " + r.status));
   }
   return data;
+}
+
+function historyItem(h) {
+  if (h.kind === "user") return { role: "user", text: h.text };
+  if (h.kind === "text") return { role: "assistant", text: h.text };
+  if (h.kind === "tool") return { role: "tool", text: "used " + h.name };
+  if (h.kind === "tool_result") return { role: "tool", text: "a tool failed" };
+  return null;
+}
+
+function flushPending(o) {
+  if (o.pending) {
+    o.items.push({ role: "assistant", text: o.pending });
+    o.pending = "";
+  }
 }
 
 function applyEvent(o, e) {
@@ -274,6 +293,7 @@ function applyEvent(o, e) {
       o.items.push({ role: "assistant", text: e.text });
       break;
     case "tool":
+      o.lastTool = e.name;
       o.items.push({ role: "tool", text: "used " + e.name });
       break;
     case "tool_result":
@@ -281,20 +301,14 @@ function applyEvent(o, e) {
       break;
     case "turn_end":
       o.pending = "";
+      o.lastTool = null;
       if (!e.ok) o.items.push({ role: "note", text: "That turn ended with an error." });
       break;
     case "driver":
-      o.items.push({ role: "note", text: "The session's process ended. Send a message to carry on from here." });
+      o.items.push({ role: "note", text: "The session's process has ended. Send a message to carry on from here." });
       break;
     default:
       break; // approvals are shown from the poll's own list
-  }
-}
-
-function flushPending(o) {
-  if (o.pending) {
-    o.items.push({ role: "assistant", text: o.pending });
-    o.pending = "";
   }
 }
 
@@ -305,32 +319,23 @@ function logItem(item) {
   return d;
 }
 
-function paintOpen() {
-  const o = openSession;
-  if (!o || document.getElementById("open-log") === null) return;
-  const status = document.getElementById("open-status");
-  const where = { web: "Driven from the web", terminal: "Held by a terminal", none: "Not running" }[o.driver] || "";
-  status.textContent = [where, o.busy ? "answering…" : null].filter(Boolean).join(" · ");
-  document.getElementById("open-take").hidden = o.driver !== "terminal";
-  const err = document.getElementById("open-error");
-  err.textContent = o.error || "";
-  err.hidden = !o.error;
-
+function resetLog(o) {
   const log = document.getElementById("open-log");
-  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
-  log.replaceChildren(...o.items.map(logItem));
-  if (o.pending) {
-    const live = logItem({ role: "assistant", text: o.pending });
-    live.classList.add("live");
-    log.append(live);
-  }
-  if (nearBottom) log.scrollTop = log.scrollHeight;
+  log.replaceChildren();
+  o.rendered = 0;
+  o.live = null;
+  o.liveText = null;
+}
 
+function paintApprovals(o) {
+  const sig = JSON.stringify(o.approvals);
+  if (sig === o.approvalSig) return;
+  o.approvalSig = sig;
   const box = document.getElementById("open-approvals");
   box.replaceChildren();
   for (const ap of o.approvals) {
     const card = el("div", "approval");
-    card.append(el("p", "v-label", "Waiting for your decision"), el("p", "turn-text", ap.summary));
+    card.append(el("p", "v-label", "Waiting for your decision"), el("p", "turn-text summary", ap.summary));
     const row = el("div", "composer-row");
     const yes = el("button", "btn", "Allow");
     yes.type = "button";
@@ -344,12 +349,84 @@ function paintOpen() {
   }
 }
 
-async function pollOpen() {
-  const o = openSession;
-  if (!o || o.inFlight) return;
+function paintOpen(o) {
+  if (openSession !== o) return;  // another session has been opened since
+  const log = document.getElementById("open-log");
+  if (!log) return;
+  const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+
+  const where = { web: "Driven from the web", terminal: "Running in a terminal", none: "Not running" }[o.driver] || "";
+  const doing = o.busy ? (o.lastTool ? "running " + o.lastTool : "answering…") : null;
+  document.getElementById("open-status").textContent = [where, doing].filter(Boolean).join(" · ");
+
+  const err = document.getElementById("open-error");
+  err.textContent = o.error || "";
+  err.hidden = !o.error;
+
+  // A terminal holds the session: the composer waits behind the one handover card.
+  const inTerminal = o.driver === "terminal";
+  document.getElementById("open-terminal").hidden = !inTerminal;
+  document.getElementById("open-text").disabled = inTerminal;
+  document.getElementById("open-send").disabled = inTerminal;
+
+  while (o.rendered < o.items.length) {
+    log.insertBefore(logItem(o.items[o.rendered]), o.live || null);
+    o.rendered += 1;
+  }
+  if (o.pending) {
+    if (!o.live) {
+      o.live = logItem({ role: "assistant", text: "" });
+      o.live.classList.add("live");
+      o.liveText = o.live.querySelector(".turn-text");
+      log.append(o.live);
+    }
+    o.liveText.textContent = o.pending;
+  } else if (o.live) {
+    o.live.remove();
+    o.live = null;
+    o.liveText = null;
+  }
+  if (nearBottom) log.scrollTop = log.scrollHeight;
+
+  paintApprovals(o);
+}
+
+async function loadHistory(o) {
+  try {
+    const r = await api("history", { sessionId: o.id });
+    o.items = [];
+    if (r.truncated) o.items.push({ role: "note", text: "Only the end of a long conversation is shown." });
+    for (const h of r.items) {
+      const item = historyItem(h);
+      if (item) o.items.push(item);
+    }
+    o.after = r.cursor;
+    o.pending = "";
+    o.lastTool = null;
+    o.loaded = true;
+    o.error = null;
+  } catch (err) {
+    o.error = err.message;
+  }
+  if (openSession === o) {
+    resetLog(o);
+    paintOpen(o);
+    if (o.loaded) pollOpen(o);  // don't wait for the next tick to learn who's driving
+  }
+}
+
+async function pollOpen(o) {
+  if (!o.loaded || o.inFlight) return;
   o.inFlight = true;
   try {
     const r = await api("events", { sessionId: o.id, after: o.after });
+    if (r.reset) {
+      // The broker restarted since we last looked: our cursor means nothing now. Reload.
+      o.loaded = false;
+      o.inFlight = false;
+      loadHistory(o);
+      return;
+    }
     if (r.gap) o.items.push({ role: "note", text: "Some earlier messages were too old to fetch." });
     for (const e of r.events) applyEvent(o, e);
     o.driver = r.driver;
@@ -360,8 +437,15 @@ async function pollOpen() {
     o.error = err.message;
   } finally {
     o.inFlight = false;
-    paintOpen();
+    paintOpen(o);
   }
+}
+
+// One tick: load the history if that hasn't worked yet, otherwise follow live events.
+function tickOpen(o) {
+  if (openSession !== o) return;
+  if (!o.loaded) loadHistory(o);
+  else pollOpen(o);
 }
 
 async function decide(approvalId, allow) {
@@ -371,13 +455,17 @@ async function decide(approvalId, allow) {
   } catch (err) {
     o.error = err.message;
   }
-  pollOpen();
+  pollOpen(o);
 }
 
 function mountOpen(id) {
   if (openSession && openSession.timer) clearInterval(openSession.timer);
-  openSession = { id, after: 0, items: [], pending: "", approvals: [], driver: "", busy: false,
-                  error: null, inFlight: false, timer: null };
+  const o = {
+    id, loaded: false, after: 0, items: [], rendered: 0, pending: "", live: null, liveText: null,
+    approvals: [], approvalSig: "", driver: "", busy: false, lastTool: null, error: null,
+    inFlight: false, timer: null,
+  };
+  openSession = o;
   const view = document.getElementById("view");
   view.replaceChildren();
   const back = el("a", "back", "Back to the task");
@@ -390,6 +478,31 @@ function mountOpen(id) {
   err.id = "open-error";
   err.setAttribute("role", "alert");
   err.hidden = true;
+
+  const term = el("section", "approval");
+  term.id = "open-terminal";
+  term.hidden = true;
+  const cmd = el("p", "mono", "claude --resume " + id);
+  const takeBtn = el("button", "btn", "Continue here");
+  takeBtn.type = "button";
+  term.append(
+    el("p", "v-label", "Running in a terminal"),
+    el("p", "turn-text", "Messages from here can't reach that terminal. Continue here stops its Claude process; the conversation is kept. To go back, run this from the project folder in the terminal:"),
+    cmd,
+    el("div", "composer-row"),
+  );
+  term.lastChild.append(takeBtn);
+  takeBtn.addEventListener("click", async () => {
+    if (!window.confirm("Stop the terminal's Claude process and continue here? The conversation is kept.")) return;
+    try {
+      const r = await api("take_over", { sessionId: id });
+      if (!r.released) o.error = "Nothing was holding the session any more.";
+    } catch (e) {
+      o.error = e.message;
+    }
+    pollOpen(o);
+  });
+
   const log = el("div", "log");
   log.id = "open-log";
   log.setAttribute("aria-live", "polite");
@@ -413,14 +526,11 @@ function mountOpen(id) {
   }
   const send = el("button", "btn", "Send");
   send.type = "submit";
+  send.id = "open-send";
   const stop = el("button", "btn quiet", "Stop");
   stop.type = "button";
   stop.id = "open-stop";
-  const take = el("button", "btn quiet", "Continue here");
-  take.type = "button";
-  take.id = "open-take";
-  take.hidden = true;
-  row.append(model, send, stop, take);
+  row.append(model, send, stop);
   form.append(text, row);
 
   form.addEventListener("submit", async (e) => {
@@ -432,33 +542,24 @@ function mountOpen(id) {
       const clientId = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random();
       await api("send", { sessionId: id, text: msg, model: model.value, clientId });
       text.value = "";
-      openSession.busy = true;
-      openSession.error = null;
-    } catch (err) {
-      openSession.error = err.message;
+      o.busy = true;
+      o.error = null;
+    } catch (e2) {
+      o.error = e2.message;
     } finally {
       send.disabled = false;
-      pollOpen();
+      pollOpen(o);
     }
   });
   stop.addEventListener("click", async () => {
-    try { await api("stop", { sessionId: id }); } catch (err) { openSession.error = err.message; }
-    pollOpen();
-  });
-  take.addEventListener("click", async () => {
-    if (!window.confirm("Stop the terminal's Claude process and continue here? The conversation is kept.")) return;
-    try {
-      const r = await api("take_over", { sessionId: id });
-      if (!r.released) openSession.error = "Nothing was holding the session any more.";
-    } catch (err) {
-      openSession.error = err.message;
-    }
-    pollOpen();
+    try { await api("stop", { sessionId: id }); } catch (e3) { o.error = e3.message; }
+    pollOpen(o);
   });
 
-  view.append(back, head, err, log, approvals, form);
-  openSession.timer = setInterval(pollOpen, 1500);
-  pollOpen();
+  view.append(back, head, err, term, log, approvals, form);
+  // The page shows "loading" until the transcript arrives; the tick keeps retrying if it fails.
+  o.timer = setInterval(() => tickOpen(o), 1500);
+  loadHistory(o);
 }
 
 function renderView() {
