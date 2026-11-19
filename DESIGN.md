@@ -296,8 +296,19 @@ project follows (from `bix/CLAUDE.md`), plus what they mean for this page.
   - The viewport shows the task's **Goal** (job name, else the session's ai-title, else its
     first prompt), **Now** (the job's detail, else the latest assistant text), **Blocked** when
     it applies (`on you`, `on a usage limit`, or `on something else`, each with its mark and
-    text label, then the reason), and **Context** (the last turns, read-only). Progress and
-    Changes wait for status cards and captures (workbench plan, phases 2 and 3).
+    text label, then the reason), and **Context** (the last turns, read-only). **Progress**
+    is the plan from the session's status card (below), when it has one: "N of M steps done",
+    then each step with a shape and the word "done" or "to do". **Changes** waits for captures
+    (workbench plan, phase 2's capture service).
+- **Status cards (built 2026-11-18).** The session reports through one MCP tool,
+  `report_status` (`status_mcp.py`, registered at user level as `jobs-status`). It takes the
+  goal, the plan as `steps: [{text, done}]`, `now`, and `blocked: null | {on, why}` (`on` is
+  `you`, `limit`, `ci`, `deploy`, `task` or `other`). The server finds its session as its
+  parent process (`sessions/<ppid>.json`), so the model never passes a session id, and it
+  writes `cards/<sessionId>.json` atomically. The collector reads each live session's card
+  (`cardsDir`) and checks every field: a card wins over guesses for goal, now and blocked, a
+  `blocked.on: you` card makes the task `needs-you`, and a card older than two hours is a
+  guess again. Up to 20 steps; text is redacted and cut like the rest.
 - **Tiles** are text-led, not icon cards: a `--bix-bg-sunken` panel with a hairline
   `--bix-border` and 8px radius. First line: the status mark, then the task name. Second line, muted: repo
   and branch (monospace), "N min ago" and cost. A `needs-you` tile adds the `needs` line in

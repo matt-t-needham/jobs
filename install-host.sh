@@ -17,7 +17,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 U=matt
 
-install -d -o $U -g $U -m 700 /home/$U/jobs /home/$U/jobs/snapshot /home/$U/jobs/spool /home/$U/jobs/context
+install -d -o $U -g $U -m 700 /home/$U/jobs /home/$U/jobs/snapshot /home/$U/jobs/spool /home/$U/jobs/context /home/$U/jobs/cards
 for d in sessions jobs projects; do
     [[ -d /home/$U/.claude/$d ]] || install -d -o $U -g $U -m 700 /home/$U/.claude/$d
 done

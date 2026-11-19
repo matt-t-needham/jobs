@@ -170,6 +170,19 @@ function block(label, nodes) {
   return s;
 }
 
+// The plan from the session's status card. Each step has a shape and a word for
+// its state, so it reads without colour.
+function progressBlock(p) {
+  const head = el("p", "v-status", p.done + " of " + p.total + " steps done");
+  const list = el("ul", "steps");
+  for (const s of p.steps) {
+    const li = el("li", "step " + (s.done ? "done" : "todo"));
+    li.append(el("span", "step-mark"), el("span", "step-text", s.text), el("span", "step-state", s.done ? "done" : "to do"));
+    list.append(li);
+  }
+  return block("Progress", [head, list]);
+}
+
 function muted(text) {
   return el("p", "v-muted", text);
 }
@@ -203,6 +216,8 @@ function viewport(t) {
   const nowNodes = [now];
   if (t.now) nowNodes.push(el("p", "v-text", t.now));
   v.append(block("Now", nowNodes));
+
+  if (t.progress) v.append(progressBlock(t.progress));
 
   if (t.blocked) {
     const b = BLOCKED[t.blocked.on] || { label: "Blocked", mark: "stalled" };

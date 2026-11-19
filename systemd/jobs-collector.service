@@ -27,6 +27,7 @@ BindReadOnlyPaths=/home/matt/.claude/projects
 BindPaths=/home/matt/jobs/snapshot
 BindPaths=/home/matt/jobs/spool
 BindPaths=/home/matt/jobs/context
+BindPaths=/home/matt/jobs/cards
 
 PrivateNetwork=true
 IPAddressDeny=any

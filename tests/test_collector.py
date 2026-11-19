@@ -354,6 +354,57 @@ def test_blocked_says_whether_the_limit_or_you(env, needs, on):
     assert tasks(Collector(env["cfg"]).snapshot())["s1"]["blocked"] == {"on": on, "why": needs}
 
 
+def with_cards(env):
+    cards = env["home"] / "cards"
+    cards.mkdir()
+    return dataclasses.replace(env["cfg"], cards_dir=cards), cards
+
+
+def card(cards, sid, updated_ms=None, **fields):
+    body = {"sessionId": sid, "updatedAt": updated_ms or NOW, **fields}
+    (cards / f"{sid}.json").write_text(json.dumps(body))
+
+
+def test_status_card_wins_over_guesses_and_gives_progress(env):
+    cfg, cards = with_cards(env)
+    job(env, "j1", "s1", env["home"] / "apps", "working", detail="guessed detail")
+    card(cards, "s1", goal="ship the cards", now="writing the tests",
+         steps=[{"text": "collector", "done": True}, {"text": "viewport", "done": False}])
+    t = tasks(Collector(cfg).snapshot())["s1"]
+    assert t["goal"] == "ship the cards"
+    assert t["now"] == "writing the tests"
+    assert t["progress"] == {"done": 1, "total": 2, "steps": [
+        {"text": "collector", "done": True}, {"text": "viewport", "done": False}]}
+
+
+def test_status_card_saying_waiting_on_you_makes_needs_you(env):
+    cfg, cards = with_cards(env)
+    job(env, "j1", "s1", env["home"] / "apps", "working")
+    card(cards, "s1", blocked={"on": "you", "why": "pick A or B?"})
+    t = tasks(Collector(cfg).snapshot())["s1"]
+    assert t["status"] == "needs-you"
+    assert t["needs"] == "pick A or B?"
+    assert t["blocked"] == {"on": "you", "why": "pick A or B?"}
+
+
+def test_status_card_expires_at_the_age_limit_not_before(env):
+    cfg, cards = with_cards(env)
+    job(env, "j1", "s1", env["home"] / "apps", "working", detail="guessed")
+    card(cards, "s1", updated_ms=NOW - collector.CARD_MAX_AGE_MS + MIN, goal="fresh enough")
+    assert tasks(Collector(cfg).snapshot())["s1"]["goal"] == "fresh enough"
+    card(cards, "s1", updated_ms=NOW - collector.CARD_MAX_AGE_MS - MIN, goal="too old")
+    assert tasks(Collector(cfg).snapshot())["s1"]["goal"] != "too old"
+
+
+def test_status_card_with_an_unknown_blocked_value_is_ignored_and_reported(env):
+    cfg, cards = with_cards(env)
+    job(env, "j1", "s1", env["home"] / "apps", "working")
+    card(cards, "s1", blocked={"on": "the moon"})
+    snap = Collector(cfg).snapshot()
+    assert tasks(snap)["s1"]["blocked"] is None
+    assert any("unknown blocked.on" in w for w in snap["warnings"])
+
+
 def test_needs_line_from_a_model_is_redacted_on_the_tile_and_the_viewport(env):
     job(env, "j1", "s1", env["home"] / "apps", "blocked", needs="allow deploy with token=abc123def456 ?")
     t = tasks(Collector(env["cfg"]).snapshot())["s1"]
