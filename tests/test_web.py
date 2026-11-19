@@ -81,6 +81,23 @@ def test_stale_snapshot_warns_and_fails_healthz(local, monkeypatch):
     assert c.get("/healthz").status_code == 503
 
 
+def test_context_serves_only_listed_tasks_and_known_turn_fields(local, monkeypatch, tmp_path):
+    (tmp_path / "s1.json").write_text(json.dumps({"sessionId": "s1", "updatedAt": 5, "turns": [
+        {"role": "user", "at": 1, "text": "hi", "tool": "secret"},
+        {"role": "tool", "at": 2, "text": "not a turn"},
+    ]}))
+    (tmp_path / "other.json").write_text(json.dumps({"turns": [{"role": "user", "text": "nope"}]}))
+    monkeypatch.setattr(config, "CONTEXT_DIR", tmp_path)
+    store = web.Store()
+    store.set(snap())
+    c = client(store)
+    body = c.get("/api/tasks/s1/context").json()
+    assert body["turns"] == [{"role": "user", "at": 1, "text": "hi"}]
+    assert body["updatedAt"] == 5
+    assert c.get("/api/tasks/other/context").status_code == 404  # on disk, but not a listed task
+    assert c.get("/api/tasks/..%2Fs1/context").status_code == 404
+
+
 def test_no_snapshot_yet(local):
     c = client(web.Store())
     assert c.get("/api/state").json()["warnings"] == ["Waiting for the collector's first snapshot."]

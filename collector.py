@@ -33,6 +33,7 @@ SNAPSHOT_VERSION = 1
 TASK_KEYS = (
     "id", "machineId", "projectId", "name", "kind", "status", "detail", "needs",
     "repo", "branch", "startedAt", "lastActivityAt", "costUsd", "tokens", "pid", "alive",
+    "goal", "now", "blocked",
 )
 STATUSES = ("needs-you", "stalled", "working", "idle", "dead", "done")
 KINDS = ("interactive", "bg")
@@ -53,10 +54,24 @@ HOOK_STATUS = {
 }
 # Notification types that don't ask anything of the user.
 QUIET_NOTIFICATIONS = {"idle_prompt", "auth_success"}
+# A needs-you reason that means a usage or rate limit, not a question for you.
+LIMIT_RE = re.compile(r"rate.?limit|usage limit|limit reached|resets? (at |in )?\d", re.IGNORECASE)
+# Best-effort secret redaction for the text the viewport shows (workbench plan,
+# decision 2). Applied to the whole string before any cut, so a cut can't split a secret.
+REDACT_RES = [
+    (re.compile(r"(?i)\b(api[_-]?key|token|secret|password|passwd|authorization)(\s*[=:]\s*|\s+bearer\s+)\S+"),
+     r"\1\2[redacted]"),
+    (re.compile(r"\b(sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+                r"|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b"), "[redacted]"),
+    # Long runs that mix letters and digits (keys, hashes); plain slugs and paths pass.
+    (re.compile(r"(?=[A-Za-z0-9+/_-]*\d)(?=[A-Za-z0-9+/_-]*[A-Za-z])[A-Za-z0-9+/_-]{40,}={0,2}"), "[redacted]"),
+]
+CONTEXT_TURNS = 6                       # the last few turns the viewport's Context shows
+HEAD_READ = 64 * 1024                   # bytes read from the start, once, for the first prompt
 
 # Transcript written this long after the session's last status change: it's working.
 TRANSCRIPT_LEAD_MS = 10_000
-TEXT_LIMITS = {"name": 120, "detail": 200, "needs": 300}
+TEXT_LIMITS = {"name": 120, "detail": 200, "needs": 300, "goal": 200, "now": 200, "turn": 600}
 TRANSCRIPT_FIRST_READ = 256 * 1024     # bytes read from the end on first sight
 TRANSCRIPT_MAX_READ = 4 * 1024 * 1024  # more new bytes than this: skip to the end
 
@@ -89,6 +104,7 @@ class Config:
     job_max_age_hours: float = 168
     poll_seconds: float = 2
     heartbeat_seconds: float = 30
+    context_dir: Optional[Path] = None  # per-session turn slices for the workbench viewport
 
 
 def _expand(p: str) -> str:
@@ -146,6 +162,7 @@ def load_config(path: Path) -> Config:
         job_max_age_hours=_num(raw, "jobMaxAgeHours", 168),
         poll_seconds=_num(raw, "pollSeconds", 2),
         heartbeat_seconds=_num(raw, "heartbeatSeconds", 30),
+        context_dir=Path(_expand(raw["contextDir"])) if raw.get("contextDir") else None,
     )
 
 
@@ -170,9 +187,10 @@ def int_ms(v: Any) -> Optional[int]:
 
 
 def text(v: Any, key: str) -> Optional[str]:
+    """One line of model-written text, redacted, collapsed and cut to TEXT_LIMITS[key]."""
     if not isinstance(v, str):
         return None
-    v = " ".join(v.split())
+    v = " ".join(redact(v).split())
     if not v:
         return None
     limit = TEXT_LIMITS[key]
@@ -291,6 +309,78 @@ class TailInfo:
     branch: Optional[str] = None
     cost_usd: Optional[float] = None
     mtime_ms: Optional[int] = None
+    goal: Optional[str] = None      # the first real prompt, from the head of the file
+    title: Optional[str] = None     # the session's ai-title
+    now: Optional[str] = None       # the latest assistant text
+    turns: List[Dict[str, Any]] = field(default_factory=list)  # the last few turns
+
+
+def redact(s: str) -> str:
+    for rx, repl in REDACT_RES:
+        s = rx.sub(repl, s)
+    return s
+
+
+def blocked_view(status: str, needs: Optional[str]) -> Optional[Dict[str, Optional[str]]]:
+    """What the viewport's Blocked line says: on you, on a limit, or on something else.
+    `needs` is already cut and redacted by the caller."""
+    if status == "needs-you":
+        on = "limit" if needs and LIMIT_RE.search(needs) else "you"
+        return {"on": on, "why": needs}
+    if status == "stalled":
+        return {"on": "other", "why": "stalled, unknown"}
+    return None
+
+
+def turn_text(s: str) -> str:
+    """A transcript turn for the Context slice: line breaks kept, cut at the turn limit."""
+    s = s.strip()
+    limit = TEXT_LIMITS["turn"]
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _record(line: bytes) -> Optional[Dict[str, Any]]:
+    if not line.strip():
+        return None
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return None  # a torn line where a read starts or stops; the next records carry the same fields
+    return rec if isinstance(rec, dict) else None
+
+
+def _message_text(rec: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """(role, text) for a user or assistant turn with text in it, else None. Tool
+    calls and tool results carry no text here, so they never reach the viewport."""
+    kind = rec.get("type")
+    if kind not in ("user", "assistant"):
+        return None
+    msg = rec.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    if isinstance(content, str):
+        body = content
+    elif isinstance(content, list):
+        body = "\n".join(b["text"] for b in content
+                         if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str))
+    else:
+        return None
+    body = body.strip()
+    # Wrappers such as <system-reminder> and <command-name> aren't what the person said.
+    if not body or body.startswith("<"):
+        return None
+    return kind, redact(body)
+
+
+def first_prompt(path: Path) -> Optional[str]:
+    """The session's first real prompt, read once from the head of its transcript."""
+    with path.open("rb") as f:
+        head = f.read(HEAD_READ)
+    for line in head.split(b"\n"):
+        rec = _record(line)
+        mt = _message_text(rec) if rec else None
+        if mt and mt[0] == "user":
+            return mt[1]
+    return None
 
 
 class Transcripts:
@@ -321,6 +411,7 @@ class Transcripts:
         if prev is None or prev[0] != st.st_ino or st.st_size < prev[1]:
             offset = max(0, st.st_size - TRANSCRIPT_FIRST_READ)
             partial, info, skip_first = b"", TailInfo(), offset > 0
+            info.goal = text(first_prompt(path), "goal")
         else:
             _, offset, partial, info = prev
             skip_first = False
@@ -344,14 +435,20 @@ class Transcripts:
 
     @staticmethod
     def _scan(line: bytes, info: TailInfo) -> None:
-        if not line.strip():
+        rec = _record(line)
+        if rec is None:
             return
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            return  # a torn line at a skip point; the next records carry the same fields
-        if not isinstance(rec, dict):
-            return
+        mt = _message_text(rec)
+        if mt is not None:
+            role, body = mt
+            if role == "user" and info.goal is None:
+                info.goal = text(body, "goal")
+            if role == "assistant":
+                info.now = text(body, "now")
+            info.turns.append({"role": role, "at": iso_ms(rec.get("timestamp")), "text": turn_text(body)})
+            del info.turns[:-CONTEXT_TURNS]
+        if rec.get("type") == "ai-title" and isinstance(rec.get("aiTitle"), str):
+            info.title = text(redact(rec["aiTitle"]), "name")
         if rec.get("type") == "cost-state":
             cost = rec.get("totalCostUSD")
             if isinstance(cost, (int, float)) and not isinstance(cost, bool):
@@ -450,6 +547,7 @@ class Collector:
         self.hooks = HookSpool(cfg.spool_dir)
         self.pid_domain = own_pid_domain()
         self.versions: set = set()
+        self.context_written: Dict[str, int] = {}  # session id -> transcript mtime last written
 
     # Sources ------------------------------------------------------------
 
@@ -583,6 +681,30 @@ class Collector:
                 status = "stalled"
         return status, needs
 
+    def _context_stale(self, sid: str, mtime_ms: Optional[int]) -> bool:
+        # Session ids become file names: refuse anything that could be a path.
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", sid):
+            return False
+        return mtime_ms is not None and self.context_written.get(sid) != mtime_ms
+
+    def _prune_context(self, live: set, warnings: List[str]) -> None:
+        """Delete slices of tasks no longer shown, so the directory holds only what the page can ask for."""
+        ctx = self.cfg.context_dir
+        try:
+            names = os.listdir(ctx)
+        except FileNotFoundError:
+            return  # created by install-host.sh; the write above will say so
+        except OSError as e:
+            warnings.append(f"cannot list context slices: {e.strerror}")
+            return
+        for name in names:
+            if name.endswith(".json") and name[:-5] not in live:
+                try:
+                    os.unlink(ctx / name)
+                except OSError as e:
+                    warnings.append(f"cannot remove a context slice: {e.strerror}")
+        self.context_written = {k: v for k, v in self.context_written.items() if k in live}
+
     def snapshot(self) -> Dict[str, Any]:
         now = now_ms()
         warnings: List[str] = []
@@ -626,6 +748,13 @@ class Collector:
             if status == "dead" and age > self.cfg.dead_hide_minutes * 60_000:
                 continue
             job = t.job or {}
+            if self.cfg.context_dir is not None and tail.turns and self._context_stale(t.id, tail.mtime_ms):
+                try:
+                    write_snapshot(self.cfg.context_dir / f"{t.id}.json", {
+                        "sessionId": t.id, "updatedAt": tail.mtime_ms, "turns": tail.turns})
+                    self.context_written[t.id] = tail.mtime_ms
+                except OSError as e:
+                    warnings.append(f"cannot write a context slice: {e.strerror}")
             tasks.append({
                 "id": t.id,
                 "machineId": self.cfg.machine_id,
@@ -643,8 +772,13 @@ class Collector:
                 "tokens": job.get("tokens"),
                 "pid": t.pid,
                 "alive": t.alive,
+                "goal": text(job.get("name"), "goal") or text(tail.title, "goal") or text(tail.goal, "goal"),
+                "now": text(job.get("detail"), "now") or text(tail.now, "now"),
+                "blocked": blocked_view(status, needs),
             })
         alive_ids = {t.id for t in drafts.values() if t.alive}
+        if self.cfg.context_dir is not None:
+            self._prune_context({t["id"] for t in tasks}, warnings)
         self.hooks.prune(now - 24 * 3_600_000, alive_ids)
         order = {s: i for i, s in enumerate(STATUSES)}
         tasks.sort(key=lambda x: (order[x["status"]], -(x["lastActivityAt"] or 0)))

@@ -23,9 +23,9 @@ bix-specific goes in code: it lives in `config/bix.json`, compose and the unit.
 
 | File | Does |
 |------|------|
-| `collector.py` | Stdlib only, Python 3.9 syntax, one file (`python3 -I` can't import siblings). Reads `sessions/`, `jobs/*/state.json`, transcript tails (`gitBranch`, `cost-state`) and the hook spool; maps cwd → project; derives the status; writes `state.json` atomically. Copies fields by name into `TASK_KEYS`, never whole records |
+| `collector.py` | Stdlib only, Python 3.9 syntax, one file (`python3 -I` can't import siblings). Reads `sessions/`, `jobs/*/state.json`, transcript tails (`gitBranch`, `cost-state`, the viewport's goal/now/turns) and the hook spool; maps cwd → project; derives the status; writes `state.json` atomically and the per-task context slices (`contextDir`). Copies fields by name into `TASK_KEYS`, never whole records. Redaction for viewport text is `redact()` |
 | `hook.py` | Claude Code hook → one JSON file per event in the spool. Keeps event, session id, time, and for Notification its type and message only. Exit 1 on failure (non-blocking) |
-| `web.py` | FastAPI: `/` + `/static/app.{js,css}`, `/api/state`, `/api/events` (SSE, full view on change, keepalive 15 s), `/healthz` (503 when the snapshot is older than `STALE_SECONDS`). Follows the snapshot file (`JOBS_SNAPSHOT`) or runs the collector in a thread (`JOBS_CONFIG`) |
+| `web.py` | FastAPI: `/` + `/static/app.{js,css}`, `/api/state`, `/api/tasks/<id>/context` (a listed task's turn slice), `/api/events` (SSE, full view on change, keepalive 15 s), `/healthz` (503 when the snapshot is older than `STALE_SECONDS`). Follows the snapshot file (`JOBS_SNAPSHOT`) or runs the collector in a thread (`JOBS_CONFIG`). Context slices come from `JOBS_CONTEXT` |
 | `auth.py` | Access JWT on every route but `/healthz`; unset `ACCESS_AUD` refuses all. `LOCAL_ONLY=1` (laptop) skips it and only accepts Host `localhost`/`127.0.0.1` |
 | `static/` | No build step. All server text goes in via `textContent` (a test checks there's no `innerHTML`) |
 | `systemd/jobs-collector.service` | The hardened host unit; see Gotchas |
@@ -46,6 +46,11 @@ bix-specific goes in code: it lives in `config/bix.json`, compose and the unit.
 - **Session `status` lags.** On 2.1.327 a session can say `idle` mid-turn, so
   an `idle` session whose transcript was written >10 s after its status change
   counts as working. Hooks give a better signal once installed.
+- **Context slices are the only transcript text on the web.** Written only when a
+  transcript changes, deleted when a task leaves the snapshot, and served only for
+  listed ids. The collector's `contextDir` and the container's `JOBS_CONTEXT` mount
+  both need `sudo bash install-host.sh` (creates `~/jobs/context`) before the
+  compose `jobs` service can start with the mount.
 - **`--once` doesn't drain the spool**, so it's safe while the unit runs.
 - **Cost appears late on a fresh start.** `cost-state` is read only from the
   last 256 KB of a transcript and from what's appended after.

@@ -3,6 +3,7 @@
   "site": { "name": "bix.computer", "url": "https://bix.computer/" },
   "claudeDir": "~/.claude",
   "spoolDir": "~/jobs/spool",
+  "contextDir": "~/jobs/context",
   "projects": [
     { "match": "~/apps", "id": "bix", "name": "bix", "repo": "first-dir" }
   ]
